@@ -233,12 +233,9 @@ class GhostInterviewAgent:
         except Exception as e:
             logger.error(f"Screen capture query failed: {e}")
             self.overlay.stream_answer(f"\n[Error: {e}]")
-            self.overlay.set_status("error")
-            return
         finally:
             self._screen_capture_lock.release()
-
-        self.overlay.set_status("listening")
+            self.overlay.set_status("listening")
 
     def run(self):
         """Main loop: audio processing in background thread, Qt event loop on main thread."""
