@@ -29,13 +29,21 @@ pip install -r requirements.txt
 
 ### 2. Configure
 
-Edit `config.py`:
+Copy `.env.example` to `.env` and fill in your keys:
+
+```bash
+cp .env.example .env
+```
+
+- `GROQ_API_KEY` — your Groq API key (Whisper STT)
+- `GROQ_WHISPER_MODEL` — STT model (default: whisper-large-v3)
 - `OLLAMA_API_KEY` — your Ollama cloud API key
 - `OLLAMA_MODEL` — model to use (default: glm-4.5)
-- `WHISPER_MODEL` — STT model size (tiny/base/small/medium)
 - `OPENROUTER_API_KEY` — your OpenRouter API key, required for the screen-capture feature's vision queries
+- `OPENROUTER_VISION_MODEL` — vision model to use (default: `openrouter/free`, which auto-selects an available free model)
 - `SCREEN_CAPTURE_HOTKEY` — global hotkey to trigger a screen capture (default: `ctrl+shift+h`)
-- Overlay settings (opacity, position, colors)
+
+Overlay appearance (opacity, position, colors) is set directly in `config.py`, not via `.env`.
 
 ### 3. Set interview context
 
