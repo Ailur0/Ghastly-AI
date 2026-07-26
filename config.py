@@ -38,6 +38,14 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "glm-4.5")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "https://api.ollama.com/api")
+OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "qwen3-vl:235b-cloud")
+
+# === Screen Capture ===
+SCREEN_CAPTURE_HOTKEY = os.environ.get("SCREEN_CAPTURE_HOTKEY", "ctrl+shift+h")
+SCREEN_CAPTURE_PROMPT = (
+    "Look at the screen. If it's a coding/technical problem, explain the "
+    "approach concisely; otherwise describe and answer what's shown."
+)
 
 # === Audio Capture ===
 SAMPLE_RATE = 16000  # Whisper expects 16kHz
