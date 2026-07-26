@@ -20,6 +20,7 @@ import threading
 import time
 import logging
 import ctypes
+import random
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,11 @@ class GhostOverlay:
     OPACITY_OPAQUE = 1.0
     OPACITY_TRANSLUCENT = 0.5
 
+    # ── Title scramble effect (plays once at startup) ──
+    SCRAMBLE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%&*+=<>?"
+    SCRAMBLE_DURATION_MS = 800
+    SCRAMBLE_TICK_MS = 40
+
     def __init__(self, **kwargs):
         self.BAR_W   = kwargs.get("bar_width",   self.BAR_W)
         self.BAR_H   = kwargs.get("bar_height",  self.BAR_H)
@@ -135,6 +141,8 @@ class GhostOverlay:
         self.text_widget = None
         self.status_pill = None
         self.opacity_btn = None
+        self.title_label = None
+        self._scramble_timer = None
 
         self._is_running = False
         self._expanded = True
@@ -258,8 +266,8 @@ class GhostOverlay:
         bar_layout.addWidget(self.opacity_btn)
 
         # Title
-        title = QLabel("Ghastly AI")
-        title.setStyleSheet("""
+        self.title_label = QLabel("Ghastly AI")
+        self.title_label.setStyleSheet("""
             color: #0F172A;
             font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
             font-size: 14px;
@@ -267,7 +275,7 @@ class GhostOverlay:
             background: transparent;
             border: none;
         """)
-        bar_layout.addWidget(title)
+        bar_layout.addWidget(self.title_label)
 
         bar_layout.addStretch()
 
@@ -374,7 +382,51 @@ class GhostOverlay:
             # reveal that something interactive is here.
             QApplication.setOverrideCursor(QCursor(Qt.ArrowCursor))
 
+        self._start_title_scramble()
+
         logger.info(f"Cluely overlay created at {self.position} (always excluded from screen capture)")
+
+    # ────────────────────────────────────────────────
+    #  Title scramble effect (plays once at startup)
+    # ────────────────────────────────────────────────
+    def _start_title_scramble(self):
+        """
+        Animate the title label from scrambled noise into "Ghastly AI",
+        resolving left-to-right. Runs once, at startup.
+        """
+        final_text = self.title_label.text()
+        total_frames = self.SCRAMBLE_DURATION_MS // self.SCRAMBLE_TICK_MS
+        n = len(final_text)
+
+        # Stagger each character's resolve frame left-to-right, with a
+        # little jitter so it doesn't look mechanically even. Spaces
+        # resolve immediately so the word gap never visibly scrambles.
+        resolve_frames = []
+        for i, ch in enumerate(final_text):
+            if ch == " ":
+                resolve_frames.append(0)
+                continue
+            base = (i + 1) * total_frames / n
+            resolve_frames.append(max(1, int(base + random.randint(-2, 2))))
+
+        frame = 0
+
+        def tick():
+            nonlocal frame
+            frame += 1
+            chars = [
+                ch if ch == " " or frame >= resolve_at else random.choice(self.SCRAMBLE_CHARS)
+                for ch, resolve_at in zip(final_text, resolve_frames)
+            ]
+            self.title_label.setText("".join(chars))
+            if frame >= total_frames:
+                self.title_label.setText(final_text)
+                self._scramble_timer.stop()
+
+        self._scramble_timer = QTimer(self.title_label)
+        self._scramble_timer.timeout.connect(tick)
+        tick()  # set the first scrambled frame now, before the Qt event loop starts painting
+        self._scramble_timer.start(self.SCRAMBLE_TICK_MS)
 
     # ────────────────────────────────────────────────
     #  Status pill styling
