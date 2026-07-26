@@ -37,6 +37,8 @@ class HotkeyListener:
 
     def start(self) -> bool:
         """Register the hotkey. Returns True on success, False on failure."""
+        if self._registered:
+            return True
         try:
             keyboard.add_hotkey(self.hotkey, self.callback)
             self._registered = True

@@ -9,6 +9,7 @@ import os
 import time
 import base64
 import logging
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -75,10 +76,21 @@ def main():
     print(f"\nPress {config.SCREEN_CAPTURE_HOTKEY} to capture the screen and query the vision model.")
     print("Press Ctrl+C to stop.\n")
 
-    hotkey = HotkeyListener(
-        config.SCREEN_CAPTURE_HOTKEY,
-        lambda: run_capture_and_query(screen_capture, cm)
-    )
+    capture_lock = threading.Lock()
+
+    def on_hotkey():
+        if not capture_lock.acquire(blocking=False):
+            logger.debug("Capture already in progress, ignoring hotkey press")
+            return
+        try:
+            run_capture_and_query(screen_capture, cm)
+        finally:
+            capture_lock.release()
+
+    def on_hotkey_threaded():
+        threading.Thread(target=on_hotkey, daemon=True).start()
+
+    hotkey = HotkeyListener(config.SCREEN_CAPTURE_HOTKEY, on_hotkey_threaded)
     if not hotkey.start():
         print("Failed to register hotkey. Exiting.")
         return
