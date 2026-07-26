@@ -362,6 +362,12 @@ class GhostOverlay:
             self._invisible = True
             self.eye_btn.setText("🔒")
             self.eye_btn.setToolTip("Ghost Mode ON — Hidden from screen share & capture, 100% readable for you")
+            # Force a plain arrow cursor everywhere over the overlay while
+            # invisible — WDA_EXCLUDEFROMCAPTURE hides this window's pixels
+            # from screen capture, but NOT the OS mouse cursor sprite, so a
+            # widget-specific cursor (e.g. the drag bar's OpenHandCursor)
+            # would otherwise reveal that something interactive is here.
+            QApplication.setOverrideCursor(QCursor(Qt.ArrowCursor))
 
         logger.info(f"Cluely overlay created at {self.position} (WDA capture protection active)")
 
@@ -409,12 +415,16 @@ class GhostOverlay:
             self.eye_btn.setToolTip("Ghost Mode ON — Hidden from screen share & capture, 100% readable for you")
             self._set_wda(True)
             self.window.setWindowOpacity(1.0)
+            # See _create_window: forces the arrow cursor so hovering the
+            # overlay doesn't betray its presence in a screen capture.
+            QApplication.setOverrideCursor(QCursor(Qt.ArrowCursor))
             logger.info("Ghost mode ON (WDA capture exclusion active, full visual clarity)")
         else:
             self.eye_btn.setText("👁")
             self.eye_btn.setToolTip("Toggle ghost mode")
             self._set_wda(False)
             self.window.setWindowOpacity(1.0)
+            QApplication.restoreOverrideCursor()
             logger.info("Ghost mode OFF")
 
     def _on_minimize(self):
