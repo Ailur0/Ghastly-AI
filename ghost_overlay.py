@@ -3,14 +3,15 @@ ghost_overlay.py — Cluely-Inspired Frosted Glass Overlay
 
 Bright, clean, cloud-native aesthetic with:
   - Frosted glass command bar (draggable, collapsible)
-  - Eye icon toggle for invisibility (WDA + click-through + opacity fade)
+  - Sun/moon icon toggles opacity (opaque / translucent)
   - Animated status pill (Ready / Listening / Transcribing / Answering / Error)
   - Scrollable answer panel with glass Q&A cards
   - Sky-blue accent color throughout
 
 On Windows:
-  - WDA_EXCLUDEFROMCAPTURE when eye is closed (invisible to screen capture)
-  - Click-through mode when invisible
+  - WDA_EXCLUDEFROMCAPTURE is always active (invisible to screen capture)
+  - Cursor is forced to a plain arrow so hovering doesn't reveal the overlay
+    in a screen capture (WDA hides this window's pixels, not the OS cursor)
 """
 
 import sys
@@ -114,12 +115,18 @@ class GhostOverlay:
     PANEL_W = 480
     PANEL_H = 380
 
+    # ── Opacity defaults (Qt window opacity scale, 0.0-1.0) ──
+    OPACITY_OPAQUE = 1.0
+    OPACITY_TRANSLUCENT = 0.5
+
     def __init__(self, **kwargs):
         self.BAR_W   = kwargs.get("bar_width",   self.BAR_W)
         self.BAR_H   = kwargs.get("bar_height",  self.BAR_H)
         self.PANEL_W = kwargs.get("panel_width",  self.PANEL_W)
         self.PANEL_H = kwargs.get("panel_height", self.PANEL_H)
         self.position = kwargs.get("position", "top-center")
+        self.OPACITY_OPAQUE = kwargs.get("opacity_opaque", self.OPACITY_OPAQUE)
+        self.OPACITY_TRANSLUCENT = kwargs.get("opacity_translucent", self.OPACITY_TRANSLUCENT)
 
         self.app = None
         self.window = None
@@ -127,11 +134,11 @@ class GhostOverlay:
         self.panel = None
         self.text_widget = None
         self.status_pill = None
-        self.eye_btn = None
+        self.opacity_btn = None
 
         self._is_running = False
         self._expanded = True
-        self._invisible = False
+        self._opaque = True
         self._question_count = 0
         self._hwnd = None
 
@@ -230,12 +237,12 @@ class GhostOverlay:
         bar_layout.setContentsMargins(10, 0, 8, 0)
         bar_layout.setSpacing(8)
 
-        # Eye button
-        self.eye_btn = QPushButton("👁")
-        self.eye_btn.setFixedSize(28, 28)
-        self.eye_btn.setCursor(QCursor(Qt.PointingHandCursor))
-        self.eye_btn.setToolTip("Toggle invisibility")
-        self.eye_btn.setStyleSheet("""
+        # Opacity toggle button (sun = opaque, moon = translucent)
+        self.opacity_btn = QPushButton("☀️")
+        self.opacity_btn.setFixedSize(28, 28)
+        self.opacity_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.opacity_btn.setToolTip("Opaque — click to make translucent")
+        self.opacity_btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
                 border: none;
@@ -247,8 +254,8 @@ class GhostOverlay:
                 background: rgba(14, 165, 233, 0.12);
             }
         """)
-        self.eye_btn.clicked.connect(self._toggle_invisible)
-        bar_layout.addWidget(self.eye_btn)
+        self.opacity_btn.clicked.connect(self._toggle_opacity)
+        bar_layout.addWidget(self.opacity_btn)
 
         # Title
         title = QLabel("Ghastly AI")
@@ -353,23 +360,21 @@ class GhostOverlay:
         root.addWidget(self.panel)
 
         # ── Show ──
-        self.window.setWindowOpacity(1.0)
+        self.window.setWindowOpacity(self.OPACITY_OPAQUE)
         self.window.show()
 
         if IS_WINDOWS:
             self._hwnd = int(self.window.winId())
+            # Always excluded from screen capture — not a toggle.
             self._set_wda(True)
-            self._invisible = True
-            self.eye_btn.setText("🔒")
-            self.eye_btn.setToolTip("Ghost Mode ON — Hidden from screen share & capture, 100% readable for you")
-            # Force a plain arrow cursor everywhere over the overlay while
-            # invisible — WDA_EXCLUDEFROMCAPTURE hides this window's pixels
-            # from screen capture, but NOT the OS mouse cursor sprite, so a
-            # widget-specific cursor (e.g. the drag bar's OpenHandCursor)
-            # would otherwise reveal that something interactive is here.
+            # Force a plain arrow cursor everywhere over the overlay —
+            # WDA_EXCLUDEFROMCAPTURE hides this window's pixels from screen
+            # capture, but NOT the OS mouse cursor sprite, so a widget-specific
+            # cursor (e.g. the drag bar's OpenHandCursor) would otherwise
+            # reveal that something interactive is here.
             QApplication.setOverrideCursor(QCursor(Qt.ArrowCursor))
 
-        logger.info(f"Cluely overlay created at {self.position} (WDA capture protection active)")
+        logger.info(f"Cluely overlay created at {self.position} (always excluded from screen capture)")
 
     # ────────────────────────────────────────────────
     #  Status pill styling
@@ -407,25 +412,19 @@ class GhostOverlay:
         self.window.resize(w, h)
         logger.info(f"Panel {'expanded' if self._expanded else 'collapsed'}")
 
-    def _toggle_invisible(self):
-        """Toggle ghost invisibility mode (eye icon)."""
-        self._invisible = not self._invisible
-        if self._invisible:
-            self.eye_btn.setText("🔒")
-            self.eye_btn.setToolTip("Ghost Mode ON — Hidden from screen share & capture, 100% readable for you")
-            self._set_wda(True)
-            self.window.setWindowOpacity(1.0)
-            # See _create_window: forces the arrow cursor so hovering the
-            # overlay doesn't betray its presence in a screen capture.
-            QApplication.setOverrideCursor(QCursor(Qt.ArrowCursor))
-            logger.info("Ghost mode ON (WDA capture exclusion active, full visual clarity)")
+    def _toggle_opacity(self):
+        """Toggle overlay opacity between opaque and translucent (sun/moon icon)."""
+        self._opaque = not self._opaque
+        if self._opaque:
+            self.opacity_btn.setText("☀️")
+            self.opacity_btn.setToolTip("Opaque — click to make translucent")
+            self.window.setWindowOpacity(self.OPACITY_OPAQUE)
+            logger.info("Overlay opacity: opaque")
         else:
-            self.eye_btn.setText("👁")
-            self.eye_btn.setToolTip("Toggle ghost mode")
-            self._set_wda(False)
-            self.window.setWindowOpacity(1.0)
-            QApplication.restoreOverrideCursor()
-            logger.info("Ghost mode OFF")
+            self.opacity_btn.setText("🌙")
+            self.opacity_btn.setToolTip("Translucent — click to make opaque")
+            self.window.setWindowOpacity(self.OPACITY_TRANSLUCENT)
+            logger.info("Overlay opacity: translucent")
 
     def _on_minimize(self):
         if self.window:

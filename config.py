@@ -58,7 +58,8 @@ SILENCE_THRESHOLD = 0.01  # RMS threshold for silence detection
 SILENCE_DURATION = 1.0  # seconds of silence before processing chunk
 
 # === Ghost Overlay (Cluely Design System) ===
-OVERLAY_OPACITY = 245         # 0-255 (near-opaque frosted glass)
+OVERLAY_OPACITY_OPAQUE = 1.0        # 0.0-1.0 (Qt window opacity scale)
+OVERLAY_OPACITY_TRANSLUCENT = 0.5   # 0.0-1.0
 OVERLAY_BAR_WIDTH = 420       # command bar width (collapsed)
 OVERLAY_BAR_HEIGHT = 38       # command bar height
 OVERLAY_PANEL_WIDTH = 480     # answer panel width (expanded)
