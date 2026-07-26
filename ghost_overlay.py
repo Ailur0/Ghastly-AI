@@ -133,6 +133,8 @@ class GhostOverlay:
         self.position = kwargs.get("position", "top-center")
         self.OPACITY_OPAQUE = kwargs.get("opacity_opaque", self.OPACITY_OPAQUE)
         self.OPACITY_TRANSLUCENT = kwargs.get("opacity_translucent", self.OPACITY_TRANSLUCENT)
+        # List of (label, key-combo) pairs, e.g. [("Screen capture", "ctrl+shift+h")]
+        self.hotkeys = kwargs.get("hotkeys", [])
 
         self.app = None
         self.window = None
@@ -141,6 +143,7 @@ class GhostOverlay:
         self.text_widget = None
         self.status_pill = None
         self.opacity_btn = None
+        self.info_btn = None
         self.title_label = None
         self._scramble_timer = None
 
@@ -264,6 +267,25 @@ class GhostOverlay:
         """)
         self.opacity_btn.clicked.connect(self._toggle_opacity)
         bar_layout.addWidget(self.opacity_btn)
+
+        # Info button (hover tooltip lists hotkeys)
+        self.info_btn = QPushButton("ℹ️")
+        self.info_btn.setFixedSize(28, 28)
+        self.info_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.info_btn.setToolTip(self._build_hotkeys_tooltip())
+        self.info_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                border-radius: 6px;
+                font-size: 15px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background: rgba(14, 165, 233, 0.12);
+            }
+        """)
+        bar_layout.addWidget(self.info_btn)
 
         # Title
         self.title_label = QLabel("Ghastly AI")
@@ -477,6 +499,16 @@ class GhostOverlay:
             self.opacity_btn.setToolTip("Translucent — click to make opaque")
             self.window.setWindowOpacity(self.OPACITY_TRANSLUCENT)
             logger.info("Overlay opacity: translucent")
+
+    def _build_hotkeys_tooltip(self) -> str:
+        """Build the info button's tooltip text listing all configured hotkeys."""
+        if not self.hotkeys:
+            return "No hotkeys configured"
+        lines = ["Hotkeys:"]
+        for label, combo in self.hotkeys:
+            formatted = "+".join(part.capitalize() for part in combo.split("+"))
+            lines.append(f"{label} — {formatted}")
+        return "\n".join(lines)
 
     def _on_minimize(self):
         if self.window:

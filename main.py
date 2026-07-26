@@ -60,6 +60,7 @@ class GhostInterviewAgent:
             position=config.OVERLAY_POSITION,
             opacity_opaque=config.OVERLAY_OPACITY_OPAQUE,
             opacity_translucent=config.OVERLAY_OPACITY_TRANSLUCENT,
+            hotkeys=[("Screen capture", config.SCREEN_CAPTURE_HOTKEY)],
         )
 
         self.screen_capture = ScreenCapture()
