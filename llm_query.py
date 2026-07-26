@@ -274,6 +274,14 @@ def query_openrouter_vision_stream(
             except json.JSONDecodeError:
                 continue
 
+            if "error" in data:
+                error_msg = f"OpenRouter stream error: {data['error']}"
+                logger.error(error_msg)
+                yield f"[Error: {error_msg}]"
+                yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
+                                 "full_text": "", "error": error_msg}}
+                return
+
             choices = data.get("choices", [])
             if not choices:
                 continue
@@ -293,6 +301,14 @@ def query_openrouter_vision_stream(
 
         total_ms = (time.time() - start_time) * 1000
         ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else 0
+
+        if token_count == 0:
+            error_msg = "OpenRouter returned no content (empty response)"
+            logger.error(error_msg)
+            yield f"[Error: {error_msg}]"
+            yield {"_meta": {"total_ms": total_ms, "ttft_ms": 0, "token_count": 0,
+                             "full_text": "", "error": error_msg}}
+            return
 
         logger.info(f"Vision LLM: {token_count} chunks, {total_ms:.0f}ms total, {ttft_ms:.0f}ms TTFT")
 
