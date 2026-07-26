@@ -12,6 +12,10 @@ PyQt5==5.15.11
 # HTTP client (Groq + Ollama cloud APIs)
 requests==2.34.2
 
+# Screen capture feature
+mss==10.2.0
+keyboard==0.13.5
+
 # That's it. No torch, no openai-whisper, no heavy downloads.
 # STT: Groq cloud API (whisper-large-v3)
 # LLM: Ollama cloud API (glm-4.5)

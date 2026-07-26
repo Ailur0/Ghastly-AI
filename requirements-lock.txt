@@ -8,6 +8,8 @@ certifi==2026.7.22
 cffi==2.1.0
 charset-normalizer==3.4.9
 idna==3.18
+keyboard==0.13.5
+mss==10.2.0
 numpy==2.5.1
 packaging==26.2
 pefile==2024.8.26
