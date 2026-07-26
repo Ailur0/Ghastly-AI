@@ -18,7 +18,10 @@ from typing import Generator
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_BASE_URL, OLLAMA_VISION_MODEL
+from config import (
+    OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_BASE_URL,
+    OPENROUTER_API_KEY, OPENROUTER_VISION_MODEL, OPENROUTER_BASE_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -184,18 +187,28 @@ def query_ollama_stream(
     yield from _stream_chat(url, payload, headers)
 
 
-def query_ollama_vision_stream(
+def query_openrouter_vision_stream(
     image_b64: str,
     prompt: str,
     context: str,
     state: dict,
-    api_key: str = OLLAMA_API_KEY,
-    model: str = OLLAMA_VISION_MODEL,
-    base_url: str = OLLAMA_BASE_URL,
+    api_key: str = OPENROUTER_API_KEY,
+    model: str = OPENROUTER_VISION_MODEL,
+    base_url: str = OPENROUTER_BASE_URL,
     max_tokens: int = 250
 ) -> Generator:
     """
-    Stream response from Ollama cloud /api/chat endpoint with an image attached.
+    Stream response from OpenRouter's OpenAI-compatible /chat/completions
+    endpoint with an image attached.
+
+    OpenRouter stream format (SSE):
+        data: {"choices":[{"delta":{"content":"Hello"}}]}
+        data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+        data: [DONE]
+
+    This does NOT reuse _stream_chat (that helper is Ollama-NDJSON-specific);
+    OpenRouter's SSE framing and "choices[0].delta.content" shape differ from
+    Ollama's "message.content" NDJSON lines.
 
     Used by the screen capture feature: `prompt` is the fixed generic
     SCREEN_CAPTURE_PROMPT (not a transcribed question), `image_b64` is a
@@ -203,20 +216,23 @@ def query_ollama_vision_stream(
     """
     full_prompt = build_prompt(prompt, context, state)
 
-    url = f"{base_url}/chat"
+    url = f"{base_url}/chat/completions"
 
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": full_prompt, "images": [image_b64]}
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": full_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}}
+                ]
+            }
         ],
         "stream": True,
-        "think": False,
-        "options": {
-            "num_predict": max_tokens,
-            "temperature": 0.7,
-        }
+        "max_tokens": max_tokens,
+        "temperature": 0.7,
     }
 
     headers = {
@@ -225,7 +241,80 @@ def query_ollama_vision_stream(
         "User-Agent": "GhostInterviewAgent/1.0",
     }
 
-    yield from _stream_chat(url, payload, headers)
+    start_time = time.time()
+    first_token_time = None
+    total_text = ""
+    token_count = 0
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, stream=True, timeout=30)
+
+        if response.status_code != 200:
+            error_msg = f"OpenRouter API error {response.status_code}: {response.text[:200]}"
+            logger.error(error_msg)
+            yield error_msg
+            yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
+                             "full_text": "", "error": error_msg}}
+            return
+
+        for line in response.iter_lines():
+            if not line:
+                continue
+
+            decoded = line.decode("utf-8")
+            if not decoded.startswith("data: "):
+                continue
+
+            data_str = decoded[len("data: "):]
+            if data_str.strip() == "[DONE]":
+                break
+
+            try:
+                data = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+
+            choices = data.get("choices", [])
+            if not choices:
+                continue
+
+            delta = choices[0].get("delta", {})
+            content = delta.get("content", "")
+
+            if content:
+                if first_token_time is None:
+                    first_token_time = time.time()
+                    ttft_ms = (first_token_time - start_time) * 1000
+                    logger.info(f"TTFT: {ttft_ms:.0f}ms")
+
+                total_text += content
+                token_count += 1
+                yield content
+
+        total_ms = (time.time() - start_time) * 1000
+        ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else 0
+
+        logger.info(f"Vision LLM: {token_count} chunks, {total_ms:.0f}ms total, {ttft_ms:.0f}ms TTFT")
+
+        yield {
+            "_meta": {
+                "total_ms": total_ms,
+                "ttft_ms": ttft_ms,
+                "token_count": token_count,
+                "full_text": total_text
+            }
+        }
+
+    except requests.exceptions.Timeout:
+        logger.error("OpenRouter API timeout")
+        yield "[Error: OpenRouter API timeout]"
+        yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
+                         "full_text": "", "error": "timeout"}}
+    except Exception as e:
+        logger.error(f"Vision LLM error: {e}")
+        yield f"[Error: {e}]"
+        yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
+                         "full_text": "", "error": str(e)}}
 
 
 def query_ollama(
@@ -307,21 +396,17 @@ if __name__ == "__main__":
         else:
             print(chunk, end="", flush=True)
 
-    print("\n\n=== Ollama Vision Test ===\n")
+    print("\n\n=== OpenRouter Vision Test ===\n")
 
     import base64
-    import mss
-    import mss.tools
+    from screen_capture import ScreenCapture
 
-    with mss.mss() as sct:
-        monitor = sct.monitors[1]
-        sct_img = sct.grab(monitor)
-        png_bytes = mss.tools.to_png(sct_img.rgb, sct_img.size)
+    png_bytes = ScreenCapture().capture_primary_monitor()
     image_b64 = base64.b64encode(png_bytes).decode("utf-8")
 
     from config import SCREEN_CAPTURE_PROMPT
 
-    for chunk in query_ollama_vision_stream(
+    for chunk in query_openrouter_vision_stream(
         image_b64=image_b64,
         prompt=SCREEN_CAPTURE_PROMPT,
         context=test_context,

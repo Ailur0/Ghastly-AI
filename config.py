@@ -38,7 +38,11 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "glm-4.5")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "https://api.ollama.com/api")
-OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "qwen3-vl:235b-cloud")
+
+# === Vision LLM (OpenRouter) ===
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_VISION_MODEL = os.environ.get("OPENROUTER_VISION_MODEL", "openrouter/free")
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 # === Screen Capture ===
 SCREEN_CAPTURE_HOTKEY = os.environ.get("SCREEN_CAPTURE_HOTKEY", "ctrl+shift+h")
