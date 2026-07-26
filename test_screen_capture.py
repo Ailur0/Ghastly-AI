@@ -64,7 +64,7 @@ def run_capture_and_query(screen_capture: ScreenCapture, cm: ContextManager):
 
 def main():
     print("=" * 60)
-    print("  Ghost Interview Agent — Screen Capture Test")
+    print("  Ghastly AI — Screen Capture Test")
     print("=" * 60)
 
     cm = ContextManager()

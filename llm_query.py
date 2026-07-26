@@ -181,7 +181,7 @@ def query_ollama_stream(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
-        "User-Agent": "GhostInterviewAgent/1.0",
+        "User-Agent": "GhastlyAI/1.0",
     }
 
     yield from _stream_chat(url, payload, headers)
@@ -238,7 +238,7 @@ def query_openrouter_vision_stream(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
-        "User-Agent": "GhostInterviewAgent/1.0",
+        "User-Agent": "GhastlyAI/1.0",
     }
 
     start_time = time.time()
@@ -362,7 +362,7 @@ def query_ollama(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
-        "User-Agent": "GhostInterviewAgent/1.0",
+        "User-Agent": "GhastlyAI/1.0",
     }
     
     start_time = time.time()

@@ -27,7 +27,7 @@ logger = logging.getLogger("test-pipeline")
 
 def main():
     print("=" * 60)
-    print("  Ghost Interview Agent — Pipeline Test (no overlay)")
+    print("  Ghastly AI — Pipeline Test (no overlay)")
     print("=" * 60)
     print()
     

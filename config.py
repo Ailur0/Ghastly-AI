@@ -1,4 +1,4 @@
-# config.py — Ghost Interview Agent Configuration
+# config.py — Ghastly AI Configuration
 # API keys loaded from environment variables / .env file
 # Never hardcode keys. Never commit .env.
 

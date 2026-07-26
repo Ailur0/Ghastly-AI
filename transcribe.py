@@ -65,7 +65,7 @@ def transcribe_groq(
     
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "User-Agent": "GhostInterviewAgent/1.0",
+        "User-Agent": "GhastlyAI/1.0",
     }
     
     files = {

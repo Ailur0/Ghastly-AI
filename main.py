@@ -1,5 +1,5 @@
 """
-main.py — Ghost Interview Agent: Entry point & orchestration
+main.py — Ghastly AI: Entry point & orchestration
 
 Pipeline:
   System Audio → VAD → Groq Whisper STT (cloud) → Question Filter →
@@ -74,7 +74,7 @@ class GhostInterviewAgent:
     def initialize(self):
         """Initialize context, overlay, and verify API connectivity."""
         logger.info("=" * 50)
-        logger.info("Ghost Interview Agent — Initializing")
+        logger.info("Ghastly AI — Initializing")
         logger.info("=" * 50)
         
         # Load context
@@ -276,7 +276,7 @@ class GhostInterviewAgent:
         self.audio.start()
         self.overlay.set_status("listening")
         
-        logger.info("Ghost Interview Agent is LISTENING")
+        logger.info("Ghastly AI is LISTENING")
         logger.info("=" * 50)
         
         try:
@@ -329,14 +329,14 @@ class GhostInterviewAgent:
     
     def stop(self):
         """Stop all components."""
-        logger.info("Stopping Ghost Interview Agent...")
+        logger.info("Stopping Ghastly AI...")
         self.is_running = False
         
         self.audio.stop()
         self.hotkey_listener.stop()
         self.overlay.stop()
 
-        logger.info("Ghost Interview Agent stopped")
+        logger.info("Ghastly AI stopped")
 
 
 def signal_handler(sig, frame):

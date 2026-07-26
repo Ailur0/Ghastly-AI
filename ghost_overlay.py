@@ -193,7 +193,7 @@ class GhostOverlay:
         total_h = self.BAR_H + self.PANEL_H + 32
 
         self.window = QWidget()
-        self.window.setWindowTitle("Ghost Agent")
+        self.window.setWindowTitle("Ghastly AI")
         self.window.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         )
@@ -251,7 +251,7 @@ class GhostOverlay:
         bar_layout.addWidget(self.eye_btn)
 
         # Title
-        title = QLabel("Ghost Agent")
+        title = QLabel("Ghastly AI")
         title.setStyleSheet("""
             color: #0F172A;
             font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;

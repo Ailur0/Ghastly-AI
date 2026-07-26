@@ -1,4 +1,4 @@
-# Ghost Interview Agent — Dependencies
+# Ghastly AI — Dependencies
 # Install: pip install -r requirements.txt
 
 # Audio capture

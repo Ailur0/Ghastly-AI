@@ -1,4 +1,4 @@
-# ⚡ Ghost Interview Agent
+# ⚡ Ghastly AI
 
 Real-time interview assistant with an invisible screen overlay.
 
@@ -92,7 +92,7 @@ The ghost overlay appears in the corner of your screen. Start your interview cal
 ## Architecture
 
 ```
-ghost-interview-agent/
+ghastly-ai/
 ├── main.py              ← Entry point + orchestration
 ├── config.py            ← All settings
 ├── audio_capture.py     ← System audio loopback + VAD
