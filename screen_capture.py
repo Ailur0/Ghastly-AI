@@ -20,7 +20,7 @@ class ScreenCapture:
     """Captures the primary monitor as PNG bytes."""
 
     def capture_primary_monitor(self) -> bytes:
-        with mss.mss() as sct:
+        with mss.MSS() as sct:
             # monitors[0] is the all-monitors bounding box; monitors[1] is the primary monitor
             monitor = sct.monitors[1]
             sct_img = sct.grab(monitor)
