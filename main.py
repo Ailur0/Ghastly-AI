@@ -66,6 +66,8 @@ class GhostInterviewAgent:
             self.on_screen_capture_hotkey
         )
         self._screen_capture_lock = threading.Lock()
+        self._audio_answering_lock = threading.Lock()
+        self._audio_answering_count = 0
 
         self.is_running = False
     
@@ -109,72 +111,91 @@ class GhostInterviewAgent:
         # Verify Ollama API key is set
         if not config.OLLAMA_API_KEY or config.OLLAMA_API_KEY == "your-ollama-api-key":
             logger.warning("Ollama API key not set! Edit config.py")
-    
+
+        # Verify OpenRouter API key is set (used for screen-capture vision queries)
+        if not config.OPENROUTER_API_KEY:
+            logger.warning(
+                "OpenRouter API key not set! Screen capture feature will not work "
+                "until OPENROUTER_API_KEY is set in .env"
+            )
+
     def process_question(self, question_text: str):
         """
         Process a single question: send to LLM, stream answer to overlay.
         Target: <2s total after question is complete.
         """
         start_time = time.time()
-        
-        # Update status → Answering
-        self.overlay.set_status("answering")
-        
-        # Show question on overlay immediately
-        self.overlay.show_question(question_text)
-        
-        # Get context and state
-        context = self.context_mgr.get_context_string()
-        state = self.context_mgr.get_state()
-        
-        # Stream answer from LLM
-        full_answer = ""
-        meta = None
-        
+
+        with self._audio_answering_lock:
+            self._audio_answering_count += 1
         try:
-            for chunk in query_ollama_stream(
-                question=question_text,
-                context=context,
-                state=state,
-                api_key=config.OLLAMA_API_KEY,
-                model=config.OLLAMA_MODEL,
-                base_url=config.OLLAMA_BASE_URL,
-                max_tokens=config.MAX_ANSWER_CHARS // 4
-            ):
-                if isinstance(chunk, dict) and "_meta" in chunk:
-                    meta = chunk["_meta"]
-                else:
-                    full_answer += chunk
-                    self.overlay.stream_answer(chunk)
-            
-            # Show latency if enabled
-            if config.SHOW_LATENCY and meta:
-                total_ms = (time.time() - start_time) * 1000
-                ttft = meta.get("ttft_ms", 0)
-                self.overlay.show_latency(total_ms, ttft)
-                
-                logger.info(f"Q: '{question_text[:60]}...'")
-                logger.info(f"A: '{full_answer[:60]}...'")
-                logger.info(f"Total: {total_ms:.0f}ms | TTFT: {ttft:.0f}ms | "
-                              f"Tokens: {meta.get('token_count', 0)}")
-            
-            # Save to state
-            self.context_mgr.add_qa(question_text, full_answer)
-            
-        except Exception as e:
-            logger.error(f"Failed to process question: {e}")
-            self.overlay.stream_answer(f"\n[Error: {e}]")
-            self.overlay.set_status("error")
-            return
-        
-        # Back to listening
-        self.overlay.set_status("listening")
+            # Update status → Answering
+            self.overlay.set_status("answering")
+
+            # Show question on overlay immediately
+            self.overlay.show_question(question_text)
+
+            # Get context and state
+            context = self.context_mgr.get_context_string()
+            state = self.context_mgr.get_state()
+
+            # Stream answer from LLM
+            full_answer = ""
+            meta = None
+
+            try:
+                for chunk in query_ollama_stream(
+                    question=question_text,
+                    context=context,
+                    state=state,
+                    api_key=config.OLLAMA_API_KEY,
+                    model=config.OLLAMA_MODEL,
+                    base_url=config.OLLAMA_BASE_URL,
+                    max_tokens=config.MAX_ANSWER_CHARS // 4
+                ):
+                    if isinstance(chunk, dict) and "_meta" in chunk:
+                        meta = chunk["_meta"]
+                    else:
+                        full_answer += chunk
+                        self.overlay.stream_answer(chunk)
+
+                # Show latency if enabled
+                if config.SHOW_LATENCY and meta:
+                    total_ms = (time.time() - start_time) * 1000
+                    ttft = meta.get("ttft_ms", 0)
+                    self.overlay.show_latency(total_ms, ttft)
+
+                    logger.info(f"Q: '{question_text[:60]}...'")
+                    logger.info(f"A: '{full_answer[:60]}...'")
+                    logger.info(f"Total: {total_ms:.0f}ms | TTFT: {ttft:.0f}ms | "
+                                  f"Tokens: {meta.get('token_count', 0)}")
+
+                # Save to state
+                self.context_mgr.add_qa(question_text, full_answer)
+
+            except Exception as e:
+                logger.error(f"Failed to process question: {e}")
+                self.overlay.stream_answer(f"\n[Error: {e}]")
+                self.overlay.set_status("error")
+                return
+
+            # Back to listening
+            self.overlay.set_status("listening")
+        finally:
+            with self._audio_answering_lock:
+                self._audio_answering_count -= 1
 
     def on_screen_capture_hotkey(self):
         """
         Callback for the screen-capture hotkey. Runs on the `keyboard`
         library's internal hook thread — must return immediately.
         """
+        with self._audio_answering_lock:
+            audio_busy = self._audio_answering_count > 0
+        if audio_busy:
+            logger.debug("Audio answer in progress, ignoring screen capture hotkey press")
+            return
+
         if not self._screen_capture_lock.acquire(blocking=False):
             logger.debug("Screen capture already in progress, ignoring hotkey press")
             return
@@ -228,7 +249,8 @@ class GhostInterviewAgent:
                 ttft = meta.get("ttft_ms", 0)
                 self.overlay.show_latency(total_ms, ttft)
 
-            self.context_mgr.add_qa("[Screen capture]", full_answer)
+            if not (meta and meta.get("error")):
+                self.context_mgr.add_qa("[Screen capture]", full_answer)
 
         except Exception as e:
             logger.error(f"Screen capture query failed: {e}")
