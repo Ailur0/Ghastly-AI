@@ -21,14 +21,18 @@ import sys
 import os
 import warnings
 
-warnings.filterwarnings('ignore', module='soundcard')
-
 logger = logging.getLogger(__name__)
 
 # Try to import soundcard (WASAPI loopback support on Windows)
 try:
     import soundcard as sc
     SOUNDCARD_AVAILABLE = True
+    # Filter by category, not module path: `module=` in filterwarnings matches
+    # against the warning's source *file path* (see warnings.warn_explicit),
+    # not soundcard's dotted module name — so `module='soundcard'` never
+    # actually matched a file under .../site-packages/soundcard/... and this
+    # warning was never suppressed despite the previous attempt below.
+    warnings.filterwarnings('ignore', category=sc.SoundcardRuntimeWarning)
 except Exception:
     SOUNDCARD_AVAILABLE = False
 
