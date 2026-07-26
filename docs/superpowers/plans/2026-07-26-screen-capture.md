@@ -13,7 +13,7 @@
 - Capture the primary monitor only (not all-monitors, not a selectable region).
 - Trigger is a global hotkey; default `ctrl+shift+h`, configurable via `SCREEN_CAPTURE_HOTKEY` env var.
 - Standalone trigger: the hotkey immediately captures + queries with a fixed generic prompt — it does NOT wait for or correlate with a spoken question.
-- New default vision model: `qwen3-vl:235b-cloud` (verified real Ollama Cloud tag), configurable via `OLLAMA_VISION_MODEL` env var. Separate from the existing text-only `OLLAMA_MODEL` (`glm-4.5`).
+- Vision provider: OpenRouter (not Ollama Cloud — the original Ollama vision model choice was found to be retired mid-implementation, see Task 4's revision note). Default model `openrouter/free` (OpenRouter's capability-filtered free-model router), configurable via `OPENROUTER_VISION_MODEL` env var. Separate from the existing text-only `OLLAMA_MODEL` (`glm-4.5`), which is unaffected and stays on Ollama Cloud.
 - New dependencies (`mss==10.2.0`, `keyboard==0.13.5`) are exact-pinned in `requirements.txt`, matching the project's existing pinning style.
 - No pytest or other test framework is introduced — this project's convention is manual, terminal-driven test scripts (see `test_pipeline.py`, and the `__main__` blocks in `audio_capture.py` / `llm_query.py`). All "tests" below follow that same convention: run a script, observe printed output.
 - Screenshot capture failure, hotkey registration failure, and vision API errors must never crash the app — audio-only operation must continue to work in all cases.
@@ -82,6 +82,16 @@ git commit -m "Add mss and keyboard dependencies for screen capture feature"
 ---
 
 ### Task 2: Add config constants
+
+> **Superseded by Task 4 rework:** this task shipped as written below (commit
+> `9f19d7f`), adding `OLLAMA_VISION_MODEL`. During Task 4's implementation,
+> that Ollama Cloud vision path was found to be unworkable (the model tag was
+> retired mid-implementation, and follow-up candidate tags all failed too —
+> see Task 4's revision note). The project switched to OpenRouter for the
+> vision path; Task 4's rework replaces `OLLAMA_VISION_MODEL` with
+> `OPENROUTER_API_KEY` / `OPENROUTER_VISION_MODEL` / `OPENROUTER_BASE_URL` in
+> `config.py`. This section is kept for history; treat Task 4's version as
+> current.
 
 **Files:**
 - Modify: `config.py`
@@ -243,42 +253,123 @@ git commit -m "Add ScreenCapture and HotkeyListener for screen capture feature"
 
 ---
 
-### Task 4: Add vision-capable Ollama query function
+### Task 4: Add vision-capable OpenRouter query function
+
+> **Revised during implementation:** the original version of this task (below,
+> before this revision) targeted an Ollama Cloud vision model
+> (`OLLAMA_VISION_MODEL`, default `qwen3-vl:235b-cloud`). While implementing
+> it, that tag was found to be retired (HTTP 410), and three follow-up
+> candidates (`qwen3-vl:8b-cloud`, `qwen3-vl:32b-cloud`, `glm-4.6:cloud`,
+> `gemma3:27b-cloud`) were probed live against the API and *all* failed
+> (404s/410s) — Ollama Cloud's free-tier catalog churns too fast for a
+> hardcoded tag. Switched to **OpenRouter** instead, using its `openrouter/free`
+> router model, which auto-selects among currently-available free models
+> filtered by required capability (image input here) — so the app's code
+> doesn't need to track catalog churn. The `_stream_chat` extraction for the
+> existing Ollama text path (already implemented in commit `8aa2e46`) is
+> unaffected and stays as-is; only the vision function changes provider.
 
 **Files:**
+- Modify: `config.py` (replace `OLLAMA_VISION_MODEL` with OpenRouter config)
 - Modify: `llm_query.py`
 
 **Interfaces:**
-- Consumes: `config.OLLAMA_VISION_MODEL` (from Task 2), existing `build_prompt()`, `SYSTEM_PROMPT` (already in `llm_query.py`)
-- Produces: `query_ollama_vision_stream(image_b64: str, prompt: str, context: str, state: dict, api_key: str, model: str, base_url: str, max_tokens: int) -> Generator` — same chunk/`_meta` yielding contract as the existing `query_ollama_stream`
-- Refactors: extracts the shared NDJSON-streaming body of `query_ollama_stream` into `_stream_chat(url, payload, headers) -> Generator`, used by both the existing text query and the new vision query (removes duplication between the two).
+- Produces (`config.py`): `config.OPENROUTER_API_KEY: str`, `config.OPENROUTER_VISION_MODEL: str`, `config.OPENROUTER_BASE_URL: str`
+- Produces (`llm_query.py`): `query_openrouter_vision_stream(image_b64: str, prompt: str, context: str, state: dict, api_key: str, model: str, base_url: str, max_tokens: int) -> Generator` — same chunk/`_meta` yielding contract as `query_ollama_stream`
+- Consumes: existing `build_prompt()`, `SYSTEM_PROMPT` (already in `llm_query.py`). Does NOT reuse `_stream_chat` — OpenRouter's SSE format differs from Ollama's NDJSON, so this function parses its own response stream.
+- Removes: `query_ollama_vision_stream` (the retired-model version from the superseded Task 2/4 text) and `OLLAMA_VISION_MODEL` (from `config.py`) — replaced by the above.
 
-- [ ] **Step 1: Extract the shared streaming helper**
+- [ ] **Step 1: Replace the vision config constants in `config.py`**
 
-First, update the top-level config import (line 21) from:
+Find and remove this line (added by the superseded Task 2):
 ```python
-from config import OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_BASE_URL
-```
-to:
-```python
-from config import OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_BASE_URL, OLLAMA_VISION_MODEL
+OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "qwen3-vl:235b-cloud")
 ```
 
-Then, in `llm_query.py`, replace the body of `query_ollama_stream` (lines 71–185) with a refactored version that delegates to a new `_stream_chat` helper. Replace the whole function block with:
+Replace it with:
+```python
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_VISION_MODEL = os.environ.get("OPENROUTER_VISION_MODEL", "openrouter/free")
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+```
+
+(Leave `SCREEN_CAPTURE_HOTKEY` and `SCREEN_CAPTURE_PROMPT`, both already in `config.py`, untouched.)
+
+- [ ] **Step 2: Verify config loads**
+
+Run:
+```bash
+venv/Scripts/python.exe -c "import config; print(config.OPENROUTER_VISION_MODEL, config.OPENROUTER_BASE_URL)"
+```
+Expected output: `openrouter/free https://openrouter.ai/api/v1`
+
+- [ ] **Step 3: Replace `query_ollama_vision_stream` with `query_openrouter_vision_stream`**
+
+In `llm_query.py`: update the top-level config import to add the new OpenRouter constants:
+```python
+from config import (
+    OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_BASE_URL,
+    OPENROUTER_API_KEY, OPENROUTER_VISION_MODEL, OPENROUTER_BASE_URL,
+)
+```
+
+Remove the existing `query_ollama_vision_stream` function entirely (it called Ollama's `/api/chat` with an `"images"` field — that endpoint/format doesn't apply to OpenRouter). Replace it with:
 
 ```python
-def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
+def query_openrouter_vision_stream(
+    image_b64: str,
+    prompt: str,
+    context: str,
+    state: dict,
+    api_key: str = OPENROUTER_API_KEY,
+    model: str = OPENROUTER_VISION_MODEL,
+    base_url: str = OPENROUTER_BASE_URL,
+    max_tokens: int = 250
+) -> Generator:
     """
-    Shared NDJSON streaming logic for Ollama /api/chat, used by both the
-    text-only and vision-capable query functions.
+    Stream response from OpenRouter's OpenAI-compatible /chat/completions
+    endpoint with an image attached.
 
-    Ollama stream format (NDJSON):
-        {"model":"glm-5.2","message":{"role":"assistant","content":"Hello","thinking":""},"done":false}
-        {"model":"glm-5.2","message":{"role":"assistant","content":"","thinking":""},"done":true,"done_reason":"stop"}
+    OpenRouter stream format (SSE):
+        data: {"choices":[{"delta":{"content":"Hello"}}]}
+        data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+        data: [DONE]
 
-    We only yield content tokens (skip thinking tokens).
-    Final yield is a dict with _meta containing latency info.
+    This does NOT reuse _stream_chat (that helper is Ollama-NDJSON-specific);
+    OpenRouter's SSE framing and "choices[0].delta.content" shape differ from
+    Ollama's "message.content" NDJSON lines.
+
+    Used by the screen capture feature: `prompt` is the fixed generic
+    SCREEN_CAPTURE_PROMPT (not a transcribed question), `image_b64` is a
+    base64-encoded PNG screenshot.
     """
+    full_prompt = build_prompt(prompt, context, state)
+
+    url = f"{base_url}/chat/completions"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": full_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}}
+                ]
+            }
+        ],
+        "stream": True,
+        "max_tokens": max_tokens,
+        "temperature": 0.7,
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": "GhostInterviewAgent/1.0",
+    }
+
     start_time = time.time()
     first_token_time = None
     total_text = ""
@@ -288,7 +379,7 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
         response = requests.post(url, json=payload, headers=headers, stream=True, timeout=30)
 
         if response.status_code != 200:
-            error_msg = f"Ollama API error {response.status_code}: {response.text[:200]}"
+            error_msg = f"OpenRouter API error {response.status_code}: {response.text[:200]}"
             logger.error(error_msg)
             yield error_msg
             yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
@@ -299,13 +390,25 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
             if not line:
                 continue
 
+            decoded = line.decode("utf-8")
+            if not decoded.startswith("data: "):
+                continue
+
+            data_str = decoded[len("data: "):]
+            if data_str.strip() == "[DONE]":
+                break
+
             try:
-                data = json.loads(line.decode("utf-8"))
+                data = json.loads(data_str)
             except json.JSONDecodeError:
                 continue
 
-            msg = data.get("message", {})
-            content = msg.get("content", "")
+            choices = data.get("choices", [])
+            if not choices:
+                continue
+
+            delta = choices[0].get("delta", {})
+            content = delta.get("content", "")
 
             if content:
                 if first_token_time is None:
@@ -317,13 +420,10 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
                 token_count += 1
                 yield content
 
-            if data.get("done", False):
-                break
-
         total_ms = (time.time() - start_time) * 1000
         ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else 0
 
-        logger.info(f"LLM: {token_count} chunks, {total_ms:.0f}ms total, {ttft_ms:.0f}ms TTFT")
+        logger.info(f"Vision LLM: {token_count} chunks, {total_ms:.0f}ms total, {ttft_ms:.0f}ms TTFT")
 
         yield {
             "_meta": {
@@ -335,127 +435,42 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
         }
 
     except requests.exceptions.Timeout:
-        logger.error("Ollama API timeout")
-        yield "[Error: Ollama API timeout]"
+        logger.error("OpenRouter API timeout")
+        yield "[Error: OpenRouter API timeout]"
         yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
                          "full_text": "", "error": "timeout"}}
     except Exception as e:
-        logger.error(f"LLM error: {e}")
+        logger.error(f"Vision LLM error: {e}")
         yield f"[Error: {e}]"
         yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
                          "full_text": "", "error": str(e)}}
-
-
-def query_ollama_stream(
-    question: str,
-    context: str,
-    state: dict,
-    api_key: str = OLLAMA_API_KEY,
-    model: str = OLLAMA_MODEL,
-    base_url: str = OLLAMA_BASE_URL,
-    max_tokens: int = 250
-) -> Generator:
-    """Stream response from Ollama cloud /api/chat endpoint (text-only)."""
-    prompt = build_prompt(question, context, state)
-
-    url = f"{base_url}/chat"
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ],
-        "stream": True,
-        "think": False,
-        "options": {
-            "num_predict": max_tokens,
-            "temperature": 0.7,
-        }
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": "GhostInterviewAgent/1.0",
-    }
-
-    yield from _stream_chat(url, payload, headers)
-
-
-def query_ollama_vision_stream(
-    image_b64: str,
-    prompt: str,
-    context: str,
-    state: dict,
-    api_key: str = OLLAMA_API_KEY,
-    model: str = OLLAMA_VISION_MODEL,
-    base_url: str = OLLAMA_BASE_URL,
-    max_tokens: int = 250
-) -> Generator:
-    """
-    Stream response from Ollama cloud /api/chat endpoint with an image attached.
-
-    Used by the screen capture feature: `prompt` is the fixed generic
-    SCREEN_CAPTURE_PROMPT (not a transcribed question), `image_b64` is a
-    base64-encoded PNG screenshot.
-    """
-    full_prompt = build_prompt(prompt, context, state)
-
-    url = f"{base_url}/chat"
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": full_prompt, "images": [image_b64]}
-        ],
-        "stream": True,
-        "think": False,
-        "options": {
-            "num_predict": max_tokens,
-            "temperature": 0.7,
-        }
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": "GhostInterviewAgent/1.0",
-    }
-
-    yield from _stream_chat(url, payload, headers)
 ```
 
-- [ ] **Step 2: Verify the existing text path still works (regression check)**
+- [ ] **Step 4: Verify the existing text path still works (regression check)**
 
 Run:
 ```bash
 venv/Scripts/python.exe llm_query.py
 ```
-Expected: same behavior as before the refactor — streams an answer about SQL vs NoSQL to the terminal, ending with a `--- Total: ...ms | TTFT: ...ms ---` line. (This exercises `query_ollama_stream` → `_stream_chat`, confirming the extraction didn't break the existing path.)
+Expected: unaffected by this task — still streams an answer about SQL vs NoSQL via `query_ollama_stream` → `_stream_chat`, ending with `--- Total: ...ms | TTFT: ...ms ---`. This function isn't touched by this task, so this is a pure regression check.
 
-- [ ] **Step 3: Add a manual vision-path check to the `__main__` block**
+- [ ] **Step 5: Replace the manual vision-path check in the `__main__` block**
 
-Append to the bottom of `llm_query.py`'s `if __name__ == "__main__":` block (after the existing loop):
+Find the vision test block added by the superseded version of this task (it references `query_ollama_vision_stream` and builds the image via inline `mss` calls). Replace it with:
 
 ```python
 
-    print("\n\n=== Ollama Vision Test ===\n")
+    print("\n\n=== OpenRouter Vision Test ===\n")
 
     import base64
-    import mss
-    import mss.tools
+    from screen_capture import ScreenCapture
 
-    with mss.mss() as sct:
-        monitor = sct.monitors[1]
-        sct_img = sct.grab(monitor)
-        png_bytes = mss.tools.to_png(sct_img.rgb, sct_img.size)
+    png_bytes = ScreenCapture().capture_primary_monitor()
     image_b64 = base64.b64encode(png_bytes).decode("utf-8")
 
     from config import SCREEN_CAPTURE_PROMPT
 
-    for chunk in query_ollama_vision_stream(
+    for chunk in query_openrouter_vision_stream(
         image_b64=image_b64,
         prompt=SCREEN_CAPTURE_PROMPT,
         context=test_context,
@@ -468,19 +483,21 @@ Append to the bottom of `llm_query.py`'s `if __name__ == "__main__":` block (aft
             print(chunk, end="", flush=True)
 ```
 
-- [ ] **Step 4: Run it again and check the vision output**
+(This now reuses `ScreenCapture` from Task 3 instead of duplicating the raw `mss` calls — Task 3 is already implemented, so this removes the duplication the earlier draft had.)
+
+- [ ] **Step 6: Run it again and check the vision output**
 
 Run:
 ```bash
 venv/Scripts/python.exe llm_query.py
 ```
-Expected: after the existing text-model output, a second section prints a streamed description of whatever is currently on your primary monitor, ending with a `--- Total: ...ms | TTFT: ...ms ---` line. If it instead prints an `[Error: ...]` line, check that `OLLAMA_VISION_MODEL` in `config.py` is a valid tag available on your Ollama Cloud account.
+Expected: after the existing text-model output, a second section prints a streamed description of whatever is currently on your primary monitor, ending with a `--- Total: ...ms | TTFT: ...ms ---` line. If it instead prints an `[Error: ...]` line, check `config.OPENROUTER_API_KEY` is set in `.env` and that OpenRouter's status page shows no outage.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add llm_query.py
-git commit -m "Add vision-capable Ollama query function, extract shared streaming helper"
+git add config.py llm_query.py
+git commit -m "Switch vision query from retired Ollama model to OpenRouter"
 ```
 
 ---
@@ -491,7 +508,7 @@ git commit -m "Add vision-capable Ollama query function, extract shared streamin
 - Modify: `main.py`
 
 **Interfaces:**
-- Consumes: `ScreenCapture`, `HotkeyListener` (Task 3); `query_ollama_vision_stream` (Task 4); `config.SCREEN_CAPTURE_HOTKEY`, `config.OLLAMA_VISION_MODEL`, `config.SCREEN_CAPTURE_PROMPT` (Task 2); existing `self.overlay.set_status/show_question/stream_answer/show_latency`, `self.context_mgr.get_context_string/get_state/add_qa`
+- Consumes: `ScreenCapture`, `HotkeyListener` (Task 3); `query_openrouter_vision_stream` (Task 4); `config.SCREEN_CAPTURE_HOTKEY`, `config.OPENROUTER_API_KEY`, `config.OPENROUTER_VISION_MODEL`, `config.OPENROUTER_BASE_URL`, `config.SCREEN_CAPTURE_PROMPT` (Tasks 2/4); existing `self.overlay.set_status/show_question/stream_answer/show_latency`, `self.context_mgr.get_context_string/get_state/add_qa`
 
 - [ ] **Step 1: Add imports**
 
@@ -508,7 +525,7 @@ from llm_query import query_ollama_stream
 ```
 to:
 ```python
-from llm_query import query_ollama_stream, query_ollama_vision_stream
+from llm_query import query_ollama_stream, query_openrouter_vision_stream
 ```
 
 - [ ] **Step 2: Add screen capture state to `__init__`**
@@ -582,14 +599,14 @@ Add these two new methods to `GhostInterviewAgent`, right after `process_questio
             full_answer = ""
             meta = None
 
-            for chunk in query_ollama_vision_stream(
+            for chunk in query_openrouter_vision_stream(
                 image_b64=image_b64,
                 prompt=config.SCREEN_CAPTURE_PROMPT,
                 context=context,
                 state=state,
-                api_key=config.OLLAMA_API_KEY,
-                model=config.OLLAMA_VISION_MODEL,
-                base_url=config.OLLAMA_BASE_URL,
+                api_key=config.OPENROUTER_API_KEY,
+                model=config.OPENROUTER_VISION_MODEL,
+                base_url=config.OPENROUTER_BASE_URL,
                 max_tokens=config.MAX_ANSWER_CHARS // 4
             ):
                 if isinstance(chunk, dict) and "_meta" in chunk:
@@ -656,7 +673,7 @@ git commit -m "Wire screen capture hotkey into main agent loop"
 - Create: `test_screen_capture.py`
 
 **Interfaces:**
-- Consumes: `ScreenCapture`, `HotkeyListener` (Task 3), `query_ollama_vision_stream` (Task 4), `ContextManager` (existing, unchanged)
+- Consumes: `ScreenCapture`, `HotkeyListener` (Task 3), `query_openrouter_vision_stream` (Task 4), `ContextManager` (existing, unchanged)
 
 - [ ] **Step 1: Write the test script**
 
@@ -679,7 +696,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from screen_capture import ScreenCapture, HotkeyListener
-from llm_query import query_ollama_vision_stream
+from llm_query import query_openrouter_vision_stream
 from context_manager import ContextManager
 
 logging.basicConfig(
@@ -698,20 +715,20 @@ def run_capture_and_query(screen_capture: ScreenCapture, cm: ContextManager):
 
     image_b64 = base64.b64encode(png_bytes).decode("utf-8")
 
-    print(f"Querying {config.OLLAMA_VISION_MODEL}...")
+    print(f"Querying {config.OPENROUTER_VISION_MODEL}...")
     print(f"{'='*60}\n")
 
     t0 = time.time()
     full_answer = ""
     meta = None
-    for chunk in query_ollama_vision_stream(
+    for chunk in query_openrouter_vision_stream(
         image_b64=image_b64,
         prompt=config.SCREEN_CAPTURE_PROMPT,
         context=cm.get_context_string(),
         state=cm.get_state(),
-        api_key=config.OLLAMA_API_KEY,
-        model=config.OLLAMA_VISION_MODEL,
-        base_url=config.OLLAMA_BASE_URL,
+        api_key=config.OPENROUTER_API_KEY,
+        model=config.OPENROUTER_VISION_MODEL,
+        base_url=config.OPENROUTER_BASE_URL,
     ):
         if isinstance(chunk, dict) and "_meta" in chunk:
             meta = chunk["_meta"]
@@ -767,7 +784,7 @@ Run:
 ```bash
 venv/Scripts/python.exe test_screen_capture.py
 ```
-Expected: prints the header, then waits. Press `ctrl+shift+h` — it should print "Capturing screen...", a byte count, "Querying qwen3-vl:235b-cloud...", then a streamed description/answer about your screen, ending with a `TOTAL: ...ms | TTFT: ...ms` line. Press `Ctrl+C` to stop; it should print "Stopped." and exit cleanly.
+Expected: prints the header, then waits. Press `ctrl+shift+h` — it should print "Capturing screen...", a byte count, "Querying openrouter/free...", then a streamed description/answer about your screen, ending with a `TOTAL: ...ms | TTFT: ...ms` line. Press `Ctrl+C` to stop; it should print "Stopped." and exit cleanly.
 
 - [ ] **Step 3: Commit**
 
@@ -782,5 +799,6 @@ git commit -m "Add standalone manual test script for screen capture feature"
 
 - [ ] `venv/Scripts/python.exe main.py` starts cleanly, registers the hotkey, and the existing audio→question→answer path still works unchanged.
 - [ ] Pressing the hotkey while `main.py` is running shows `[Screen capture]` in the overlay and streams a vision answer.
-- [ ] Killing network access or using an invalid `OLLAMA_VISION_MODEL` shows an inline `[Error: ...]` in the overlay instead of crashing the app.
+- [ ] Killing network access or using an invalid `OPENROUTER_VISION_MODEL` shows an inline `[Error: ...]` in the overlay instead of crashing the app.
+- [ ] `OPENROUTER_API_KEY` is documented as a required `.env` entry alongside `GROQ_API_KEY` / `OLLAMA_API_KEY` for anyone setting up the project fresh.
 - [ ] `requirements.txt` and `requirements-lock.txt` both include `mss` and `keyboard` at the versions installed.

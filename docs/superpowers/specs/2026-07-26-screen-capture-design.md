@@ -33,21 +33,25 @@ Let the user press a global hotkey at any time to capture the primary monitor an
 
 ```python
 SCREEN_CAPTURE_HOTKEY = os.environ.get("SCREEN_CAPTURE_HOTKEY", "ctrl+shift+h")
-OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "qwen3-vl:235b-cloud")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_VISION_MODEL = os.environ.get("OPENROUTER_VISION_MODEL", "openrouter/free")
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 SCREEN_CAPTURE_PROMPT = (
     "Look at the screen. If it's a coding/technical problem, explain the "
     "approach concisely; otherwise describe and answer what's shown."
 )
 ```
 
-`OLLAMA_VISION_MODEL` is separate from the existing `OLLAMA_MODEL` (`glm-4.5`) because the default text model is not a vision variant. `qwen3-vl:235b-cloud` is a confirmed working Ollama Cloud vision-model tag (verified against Ollama's cloud model catalog).
+**Revision note (during implementation):** the original design used an Ollama Cloud vision model (`qwen3-vl:235b-cloud`) for this path. During Task 4's implementation, that tag was found to be retired (HTTP 410), and three follow-up candidate tags (`qwen3-vl:8b-cloud`, `qwen3-vl:32b-cloud`, `glm-4.6:cloud`, `gemma3:27b-cloud`) were empirically probed against the live API and *all* failed (404s and 410s) — Ollama Cloud's free/available model catalog churns too fast for a hardcoded tag to stay reliable. Switched to **OpenRouter** instead, using its `openrouter/free` router model: OpenRouter auto-selects among its currently-available free models, filtered by required capability (image input, in this case), so the app's code doesn't need to track catalog churn itself. This is the vision path's provider; the existing text-only audio pipeline (`OLLAMA_MODEL`, Ollama Cloud) is unaffected.
 
 ### `llm_query.py` additions
 
-- `query_ollama_vision_stream(image_b64, prompt, context, state, api_key, model=OLLAMA_VISION_MODEL, base_url, max_tokens)`:
-  - Mirrors `query_ollama_stream`'s structure and streaming/meta-yielding behavior.
-  - Message payload includes `"images": [image_b64]` per Ollama's `/api/chat` vision format.
+- `query_openrouter_vision_stream(image_b64, prompt, context, state, api_key=OPENROUTER_API_KEY, model=OPENROUTER_VISION_MODEL, base_url=OPENROUTER_BASE_URL, max_tokens)`:
+  - Calls OpenRouter's OpenAI-compatible `POST {base_url}/chat/completions` endpoint (not Ollama's `/api/chat` — different provider, different wire format).
+  - Message payload uses OpenAI vision format: user message `content` is a list with a text part and an `{"type": "image_url", "image_url": {"url": "data:image/png;base64,<...>"}}` part.
+  - Response is SSE (`data: {...}\n\n` lines, terminated by `data: [DONE]`), not Ollama's NDJSON — parsed by a dedicated helper distinct from `_stream_chat` (which stays Ollama-specific, used only by the existing text path).
   - Reuses `build_prompt`'s context/state formatting so tone/history stays consistent with audio-driven answers.
+  - Yields the same chunk / `_meta` dict contract as `query_ollama_stream`, so callers (the overlay wiring in `main.py`) don't need to know which provider is behind it.
 
 ### `main.py` wiring
 
@@ -57,7 +61,7 @@ SCREEN_CAPTURE_PROMPT = (
   1. Debounce: ignore if a screen-capture query is already in flight.
   2. `overlay.set_status("answering")`; `overlay.show_question("[Screen capture]")`.
   3. Capture → base64-encode. On failure: log, `overlay.stream_answer("[Error: screen capture failed]")`, return.
-  4. `query_ollama_vision_stream(...)`, streaming chunks into `overlay.stream_answer(chunk)` exactly like `process_question` does for audio answers.
+  4. `query_openrouter_vision_stream(...)`, streaming chunks into `overlay.stream_answer(chunk)` exactly like `process_question` does for audio answers.
   5. `context_mgr.add_qa("[Screen capture]", full_answer)` so it folds into subsequent Q&A history/context.
   6. `overlay.set_status("listening")`.
 
@@ -73,7 +77,7 @@ Hotkey press (global, works while unfocused/click-through)
   → ScreenCapture.capture_primary_monitor() → PNG bytes → base64
   → on_screen_capture_hotkey() worker thread (mirrors process_question)
       → overlay: status "answering", show_question("[Screen capture]")
-      → query_ollama_vision_stream(image_b64, SCREEN_CAPTURE_PROMPT, context, state, model=OLLAMA_VISION_MODEL)
+      → query_openrouter_vision_stream(image_b64, SCREEN_CAPTURE_PROMPT, context, state, model=OPENROUTER_VISION_MODEL)
       → streamed chunks → overlay.stream_answer(chunk)
       → context_mgr.add_qa("[Screen capture]", full_answer)
       → overlay: status "listening"
@@ -87,12 +91,12 @@ Runs independently of the audio `_listen_loop` thread — a hotkey press mid-que
 |---|---|
 | Screenshot capture fails (display access, driver edge case) | Caught in `ScreenCapture`, logged, `overlay.stream_answer("[Error: screen capture failed]")`, return early — never send a broken/empty image to the API. |
 | Hotkey registration fails (e.g. elevated-privilege environment) | Caught at `initialize()`, logged as a warning (same pattern as missing API keys), app continues audio-only. |
-| Vision API error (bad model tag, timeout, non-200) | Same pattern as `query_ollama_stream`: yield an `[Error: ...]` string chunk plus a `_meta` dict with `error` set, shown inline in the overlay like existing audio-path errors. |
+| Vision API error (bad model tag, timeout, non-200, malformed SSE) | Same pattern as `query_ollama_stream`: yield an `[Error: ...]` string chunk plus a `_meta` dict with `error` set, shown inline in the overlay like existing audio-path errors. |
 | Hotkey pressed while a capture query is already in flight | Debounced: new press ignored (logged at debug level), no queuing/overlapping. |
 
 ## Testing
 
-- Manual verification via a small `test_screen_capture.py`, following the existing standalone/no-overlay style of `test_pipeline.py`: press the hotkey, confirm a screenshot is captured, base64-encoded, sent to `OLLAMA_VISION_MODEL`, and a streamed answer prints to the terminal.
+- Manual verification via a small `test_screen_capture.py`, following the existing standalone/no-overlay style of `test_pipeline.py`: press the hotkey, confirm a screenshot is captured, base64-encoded, sent to `OPENROUTER_VISION_MODEL` via OpenRouter, and a streamed answer prints to the terminal.
 - No automated test framework is introduced, matching the project's current manual/terminal-script testing convention.
 
 ## New dependencies
@@ -100,3 +104,5 @@ Runs independently of the audio `_listen_loop` thread — a hotkey press mid-que
 Added to `requirements.txt`:
 - `mss` — screenshot capture.
 - `keyboard` — global hotkey registration.
+
+(No new HTTP client dependency needed — OpenRouter's REST API is called with the project's existing `requests` library, same as Groq and Ollama.)
