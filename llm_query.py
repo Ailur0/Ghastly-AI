@@ -18,7 +18,7 @@ from typing import Generator
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_BASE_URL
+from config import OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_BASE_URL, OLLAMA_VISION_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -68,63 +68,26 @@ Answer:"""
     return prompt
 
 
-def query_ollama_stream(
-    question: str,
-    context: str,
-    state: dict,
-    api_key: str = OLLAMA_API_KEY,
-    model: str = OLLAMA_MODEL,
-    base_url: str = OLLAMA_BASE_URL,
-    max_tokens: int = 250
-) -> Generator:
+def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
     """
-    Stream response from Ollama cloud /api/chat endpoint.
-    
+    Shared NDJSON streaming logic for Ollama /api/chat, used by both the
+    text-only and vision-capable query functions.
+
     Ollama stream format (NDJSON):
         {"model":"glm-5.2","message":{"role":"assistant","content":"Hello","thinking":""},"done":false}
         {"model":"glm-5.2","message":{"role":"assistant","content":"","thinking":""},"done":true,"done_reason":"stop"}
-    
+
     We only yield content tokens (skip thinking tokens).
     Final yield is a dict with _meta containing latency info.
     """
-    prompt = build_prompt(question, context, state)
-    
-    url = f"{base_url}/chat"
-    
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ],
-        "stream": True,
-        "think": False,  # disable thinking for speed
-        "options": {
-            "num_predict": max_tokens,
-            "temperature": 0.7,
-        }
-    }
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": "GhostInterviewAgent/1.0",
-    }
-    
     start_time = time.time()
     first_token_time = None
     total_text = ""
     token_count = 0
-    
+
     try:
-        response = requests.post(
-            url,
-            json=payload,
-            headers=headers,
-            stream=True,
-            timeout=30
-        )
-        
+        response = requests.post(url, json=payload, headers=headers, stream=True, timeout=30)
+
         if response.status_code != 200:
             error_msg = f"Ollama API error {response.status_code}: {response.text[:200]}"
             logger.error(error_msg)
@@ -132,38 +95,37 @@ def query_ollama_stream(
             yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
                              "full_text": "", "error": error_msg}}
             return
-        
+
         for line in response.iter_lines():
             if not line:
                 continue
-            
+
             try:
                 data = json.loads(line.decode("utf-8"))
             except json.JSONDecodeError:
                 continue
-            
-            # Ollama format: message.content is the answer, message.thinking is internal
+
             msg = data.get("message", {})
             content = msg.get("content", "")
-            
+
             if content:
                 if first_token_time is None:
                     first_token_time = time.time()
                     ttft_ms = (first_token_time - start_time) * 1000
                     logger.info(f"TTFT: {ttft_ms:.0f}ms")
-                
+
                 total_text += content
                 token_count += 1
                 yield content
-            
+
             if data.get("done", False):
                 break
-        
+
         total_ms = (time.time() - start_time) * 1000
         ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else 0
-        
+
         logger.info(f"LLM: {token_count} chunks, {total_ms:.0f}ms total, {ttft_ms:.0f}ms TTFT")
-        
+
         yield {
             "_meta": {
                 "total_ms": total_ms,
@@ -172,7 +134,7 @@ def query_ollama_stream(
                 "full_text": total_text
             }
         }
-        
+
     except requests.exceptions.Timeout:
         logger.error("Ollama API timeout")
         yield "[Error: Ollama API timeout]"
@@ -183,6 +145,87 @@ def query_ollama_stream(
         yield f"[Error: {e}]"
         yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
                          "full_text": "", "error": str(e)}}
+
+
+def query_ollama_stream(
+    question: str,
+    context: str,
+    state: dict,
+    api_key: str = OLLAMA_API_KEY,
+    model: str = OLLAMA_MODEL,
+    base_url: str = OLLAMA_BASE_URL,
+    max_tokens: int = 250
+) -> Generator:
+    """Stream response from Ollama cloud /api/chat endpoint (text-only)."""
+    prompt = build_prompt(question, context, state)
+
+    url = f"{base_url}/chat"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        "stream": True,
+        "think": False,
+        "options": {
+            "num_predict": max_tokens,
+            "temperature": 0.7,
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": "GhostInterviewAgent/1.0",
+    }
+
+    yield from _stream_chat(url, payload, headers)
+
+
+def query_ollama_vision_stream(
+    image_b64: str,
+    prompt: str,
+    context: str,
+    state: dict,
+    api_key: str = OLLAMA_API_KEY,
+    model: str = OLLAMA_VISION_MODEL,
+    base_url: str = OLLAMA_BASE_URL,
+    max_tokens: int = 250
+) -> Generator:
+    """
+    Stream response from Ollama cloud /api/chat endpoint with an image attached.
+
+    Used by the screen capture feature: `prompt` is the fixed generic
+    SCREEN_CAPTURE_PROMPT (not a transcribed question), `image_b64` is a
+    base64-encoded PNG screenshot.
+    """
+    full_prompt = build_prompt(prompt, context, state)
+
+    url = f"{base_url}/chat"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": full_prompt, "images": [image_b64]}
+        ],
+        "stream": True,
+        "think": False,
+        "options": {
+            "num_predict": max_tokens,
+            "temperature": 0.7,
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": "GhostInterviewAgent/1.0",
+    }
+
+    yield from _stream_chat(url, payload, headers)
 
 
 def query_ollama(
@@ -255,6 +298,32 @@ if __name__ == "__main__":
     
     for chunk in query_ollama_stream(
         question="What's the difference between SQL and NoSQL databases?",
+        context=test_context,
+        state=test_state,
+    ):
+        if isinstance(chunk, dict) and "_meta" in chunk:
+            meta = chunk["_meta"]
+            print(f"\n\n--- Total: {meta['total_ms']:.0f}ms | TTFT: {meta['ttft_ms']:.0f}ms ---")
+        else:
+            print(chunk, end="", flush=True)
+
+    print("\n\n=== Ollama Vision Test ===\n")
+
+    import base64
+    import mss
+    import mss.tools
+
+    with mss.mss() as sct:
+        monitor = sct.monitors[1]
+        sct_img = sct.grab(monitor)
+        png_bytes = mss.tools.to_png(sct_img.rgb, sct_img.size)
+    image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+
+    from config import SCREEN_CAPTURE_PROMPT
+
+    for chunk in query_ollama_vision_stream(
+        image_b64=image_b64,
+        prompt=SCREEN_CAPTURE_PROMPT,
         context=test_context,
         state=test_state,
     ):
