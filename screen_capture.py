@@ -3,7 +3,7 @@ screen_capture.py — Primary-monitor screenshot capture + global hotkey registr
 
 Used by the screen capture feature: user presses a global hotkey, we grab
 the primary monitor as a PNG, base64-encode it (in main.py), and send it
-to a vision-capable Ollama model.
+to a vision-capable model via OpenRouter.
 """
 
 import logging

@@ -33,6 +33,8 @@ Edit `config.py`:
 - `OLLAMA_API_KEY` — your Ollama cloud API key
 - `OLLAMA_MODEL` — model to use (default: glm-4.5)
 - `WHISPER_MODEL` — STT model size (tiny/base/small/medium)
+- `OPENROUTER_API_KEY` — your OpenRouter API key, required for the screen-capture feature's vision queries
+- `SCREEN_CAPTURE_HOTKEY` — global hotkey to trigger a screen capture (default: `ctrl+shift+h`)
 - Overlay settings (opacity, position, colors)
 
 ### 3. Set interview context

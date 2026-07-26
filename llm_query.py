@@ -5,7 +5,7 @@ Sends transcribed question + context to Ollama cloud API (glm-5.2),
 streams the response back token-by-token for minimum latency.
 
 Target: <0.5s time-to-first-token, <1s for short answers.
-Uses Ollama /api/chat endpoint (NOT OpenAI-compatible /v1/chat/completions).
+Uses Ollama /api/chat endpoint for text queries (NOT OpenAI-compatible /v1/chat/completions). Vision queries use OpenRouter's OpenAI-compatible /chat/completions endpoint instead.
 """
 
 import json
