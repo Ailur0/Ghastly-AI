@@ -1,0 +1,25 @@
+# Locked dependency versions (full, incl. transitive) for reproducible installs.
+# Generated via: venv\Scripts\python.exe -m pip freeze
+# Install with: pip install -r requirements-lock.txt
+# For the human-readable top-level list, see requirements.txt.
+
+altgraph==0.17.5
+certifi==2026.7.22
+cffi==2.1.0
+charset-normalizer==3.4.9
+idna==3.18
+numpy==2.5.1
+packaging==26.2
+pefile==2024.8.26
+pycparser==3.0
+pyinstaller==6.21.0
+pyinstaller-hooks-contrib==2026.6
+PyQt5==5.15.11
+PyQt5-Qt5==5.15.2
+PyQt5_sip==12.18.0
+pywin32-ctypes==0.2.3
+requests==2.34.2
+setuptools==83.0.0
+SoundCard==0.4.6
+sounddevice==0.5.5
+urllib3==2.7.0

@@ -1,0 +1,83 @@
+# config.py — Ghost Interview Agent Configuration
+# API keys loaded from environment variables / .env file
+# Never hardcode keys. Never commit .env.
+
+import sys
+import os
+from pathlib import Path
+
+# PyInstaller base & executable paths
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    _base_dir = Path(sys._MEIPASS)
+    _exe_dir = Path(sys.executable).parent
+else:
+    _base_dir = Path(__file__).parent
+    _exe_dir = _base_dir
+
+# Load .env file (checks .exe folder first, then bundled _base_dir)
+_env_path = _exe_dir / ".env"
+if not _env_path.exists():
+    _env_path = _base_dir / ".env"
+
+if _env_path.exists():
+    with open(_env_path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, val = line.split("=", 1)
+                os.environ.setdefault(key.strip(), val.strip())
+
+# === STT (Groq Whisper API) ===
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_WHISPER_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3")
+GROQ_BASE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+# === LLM (Ollama Cloud) ===
+OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "glm-4.5")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "https://api.ollama.com/api")
+
+# === Audio Capture ===
+SAMPLE_RATE = 16000  # Whisper expects 16kHz
+CHUNK_DURATION = 3  # seconds per audio chunk
+SILENCE_THRESHOLD = 0.01  # RMS threshold for silence detection
+SILENCE_DURATION = 1.0  # seconds of silence before processing chunk
+
+# === Ghost Overlay (Cluely Design System) ===
+OVERLAY_OPACITY = 245         # 0-255 (near-opaque frosted glass)
+OVERLAY_BAR_WIDTH = 420       # command bar width (collapsed)
+OVERLAY_BAR_HEIGHT = 38       # command bar height
+OVERLAY_PANEL_WIDTH = 480     # answer panel width (expanded)
+OVERLAY_PANEL_HEIGHT = 380    # answer panel max height
+OVERLAY_POSITION = "top-center"
+
+# Cluely Color Palette (High-Contrast Clean Glass)
+OVERLAY_GLASS_BG = "rgba(255, 255, 255, 0.94)"
+OVERLAY_GLASS_BORDER = "rgba(255, 255, 255, 0.50)"
+OVERLAY_ACCENT = "#0284C7"           # deep sky-blue
+OVERLAY_ACCENT_HOVER = "#0369A1"
+OVERLAY_ACCENT_GLOW = "rgba(14, 165, 233, 0.35)"
+OVERLAY_TEXT_PRIMARY = "#020617"      # slate-950 (high contrast dark)
+OVERLAY_TEXT_SECONDARY = "#334155"    # slate-700 (dark readable gray)
+OVERLAY_TEXT_ANSWER = "#020617"       # slate-950 (high contrast text)
+OVERLAY_SUCCESS = "#16A34A"
+OVERLAY_ERROR = "#DC2626"
+OVERLAY_SHADOW = "0 8px 32px rgba(0, 0, 0, 0.18)"
+
+# Typography (Increased sizes for readability)
+OVERLAY_FONT_FAMILY = "Segoe UI"      # fallback: Inter, system-ui
+OVERLAY_FONT_SIZE = 16
+OVERLAY_FONT_SIZE_SMALL = 14
+OVERLAY_FONT_SIZE_META = 12
+
+# === Context ===
+CONTEXT_FILE = "context/interview-context.md"
+MAX_CONTEXT_CHARS = 8000  # trim context if too long
+
+# === Behavior ===
+MAX_ANSWER_CHARS = 1000  # limit answer length for quick reading
+SHOW_LATENCY = True  # show time-to-answer in overlay
+AUTO_SCROLL = True  # auto-scroll to latest answer
+KEEP_HISTORY = 3  # show last N answers in overlay
