@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from audio_capture import AudioCapture
 from transcribe import transcribe, is_question
-from llm_query import query_ollama_stream, query_openrouter_vision_stream
+from llm_query import query_ollama_stream, query_ollama_vision_stream
 from context_manager import ContextManager
 from ghost_overlay import GhostOverlay
 import base64
@@ -231,14 +231,14 @@ class GhostInterviewAgent:
             full_answer = ""
             meta = None
 
-            for chunk in query_openrouter_vision_stream(
+            for chunk in query_ollama_vision_stream(
                 image_b64=image_b64,
                 prompt=config.SCREEN_CAPTURE_PROMPT,
                 context=context,
                 state=state,
-                api_key=config.OPENROUTER_API_KEY,
-                model=config.OPENROUTER_VISION_MODEL,
-                base_url=config.OPENROUTER_BASE_URL,
+                api_key=config.OLLAMA_API_KEY,
+                model=config.OLLAMA_VISION_MODEL,
+                base_url=config.OLLAMA_BASE_URL,
                 max_tokens=config.MAX_ANSWER_CHARS // 4
             ):
                 if isinstance(chunk, dict) and "_meta" in chunk:

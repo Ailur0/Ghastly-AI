@@ -36,7 +36,10 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 # === LLM (Ollama Cloud) ===
 OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "glm-4.5")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "nemotron-3-super")
+# Screen captures go to Ollama too — of the free models, only gemma4 takes
+# images (the nemotron family returns "does not support image input").
+OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "gemma4:31b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "https://api.ollama.com/api")
 
 # === Vision LLM (OpenRouter) ===

@@ -19,7 +19,7 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import (
-    OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_BASE_URL,
+    OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_VISION_MODEL, OLLAMA_BASE_URL,
     OPENROUTER_API_KEY, OPENROUTER_VISION_MODEL, OPENROUTER_BASE_URL,
 )
 
@@ -194,6 +194,54 @@ def query_ollama_stream(
     yield from _stream_chat(url, payload, headers)
 
 
+def query_ollama_vision_stream(
+    image_b64: str,
+    prompt: str,
+    context: str,
+    state: dict,
+    api_key: str = OLLAMA_API_KEY,
+    model: str = OLLAMA_VISION_MODEL,
+    base_url: str = OLLAMA_BASE_URL,
+    max_tokens: int = 250
+) -> Generator:
+    """
+    Stream a screen-capture answer from Ollama /api/chat with an image attached.
+
+    Ollama takes images as a list of bare base64 strings on the message (no
+    "data:image/png;base64," prefix, unlike OpenRouter), and streams back the
+    same NDJSON as a text chat — so this shares _stream_chat with the text path.
+
+    `prompt` is the fixed SCREEN_CAPTURE_PROMPT rather than a transcribed
+    question. Only a vision-capable model works here; the nemotron models on
+    the same key reject images with a 400.
+    """
+    full_prompt = build_prompt(prompt, context, state)
+
+    url = f"{base_url}/chat"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": full_prompt, "images": [image_b64]}
+        ],
+        "stream": True,
+        "think": False,
+        "options": {
+            "num_predict": max_tokens,
+            "temperature": 0.85,
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": "GhastlyAI/1.0",
+    }
+
+    yield from _stream_chat(url, payload, headers)
+
+
 def query_openrouter_vision_stream(
     image_b64: str,
     prompt: str,
@@ -217,9 +265,10 @@ def query_openrouter_vision_stream(
     OpenRouter's SSE framing and "choices[0].delta.content" shape differ from
     Ollama's "message.content" NDJSON lines.
 
-    Used by the screen capture feature: `prompt` is the fixed generic
-    SCREEN_CAPTURE_PROMPT (not a transcribed question), `image_b64` is a
-    base64-encoded PNG screenshot.
+    No longer wired up: screen captures go through query_ollama_vision_stream
+    instead, because the OpenRouter free tier caps out at 50 requests a day.
+    Kept for the case where that key gets credits — it wants `image_b64` as a
+    base64-encoded PNG and `prompt` as the fixed SCREEN_CAPTURE_PROMPT.
     """
     full_prompt = build_prompt(prompt, context, state)
 
@@ -419,7 +468,7 @@ if __name__ == "__main__":
         else:
             print(chunk, end="", flush=True)
 
-    print("\n\n=== OpenRouter Vision Test ===\n")
+    print("\n\n=== Ollama Vision Test ===\n")
 
     import base64
     from screen_capture import ScreenCapture
@@ -429,7 +478,7 @@ if __name__ == "__main__":
 
     from config import SCREEN_CAPTURE_PROMPT
 
-    for chunk in query_openrouter_vision_stream(
+    for chunk in query_ollama_vision_stream(
         image_b64=image_b64,
         prompt=SCREEN_CAPTURE_PROMPT,
         context=test_context,
