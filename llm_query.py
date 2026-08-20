@@ -26,17 +26,24 @@ from config import (
 logger = logging.getLogger(__name__)
 
 # System prompt template — kept short for speed
-SYSTEM_PROMPT = """You are an interview assistant. The interviewer asked a question during a technical interview.
-Give a CONCISE, NATURAL answer (max 150 words) that the candidate can read and paraphrase.
+SYSTEM_PROMPT = """You are feeding answers to a candidate in a live technical interview.
+Write what a sharp, relaxed candidate would actually SAY OUT LOUD — they read your
+answer off the screen and speak it. Max 150 words.
 
-Rules:
-- Answer directly, no preamble ("Great question!", "That's a good point")
-- Use simple language, not academic
-- If it's a coding question, give the key concept + brief code snippet
-- If it's a behavioral question, give a STAR-format answer
-- Match the candidate's persona from context
-- Don't repeat previous answers
-- Be specific, not generic"""
+Sound like a person, not a document:
+- Spoken English with contractions, in first person ("I'd usually...", "The way I think about it...")
+- Vary sentence length. A short one after a long one is what real speech sounds like.
+- Lead with the actual answer, then the why. No preamble, no "Great question"
+- No markdown, no bullets, no headings, no ** — it renders as raw text on screen
+- Concrete beats abstract: a real number, tool, or example instead of a definition
+- Thinking out loud is fine ("honestly", "the tradeoff I'd worry about is...")
+- No corporate filler: leverage, utilize, robust solution, seamlessly, at scale
+
+Coding question: say the key idea in a sentence, then the smallest snippet that shows it.
+Behavioral question: tell it as a quick story — what was going on, what you did, how it
+landed — without ever labelling those parts.
+Stay in the candidate's own voice and background from the context. Don't reuse phrasing
+from previous answers."""
 
 
 def build_prompt(question: str, context: str, state: dict) -> str:
@@ -174,7 +181,7 @@ def query_ollama_stream(
         "think": False,
         "options": {
             "num_predict": max_tokens,
-            "temperature": 0.7,
+            "temperature": 0.85,
         }
     }
 
@@ -232,7 +239,7 @@ def query_openrouter_vision_stream(
         ],
         "stream": True,
         "max_tokens": max_tokens,
-        "temperature": 0.7,
+        "temperature": 0.85,
     }
 
     headers = {
@@ -356,7 +363,7 @@ def query_ollama(
         "think": False,
         "options": {
             "num_predict": max_tokens,
-            "temperature": 0.7,
+            "temperature": 0.85,
         }
     }
     headers = {
