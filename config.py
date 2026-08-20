@@ -88,6 +88,25 @@ OVERLAY_FONT_SIZE = 16
 OVERLAY_FONT_SIZE_SMALL = 14
 OVERLAY_FONT_SIZE_META = 12
 
+# === Uploaded documents & answer language ===
+# Resumes and notes added from the overlay's setup panel land here (next to
+# the .exe in a frozen build) and are folded into the context on every load.
+UPLOADS_DIR = "context/uploaded"
+# "Auto" = let the model follow whatever the question implies.
+CODE_LANGUAGES = [
+    "Auto", "Python", "Java", "JavaScript", "TypeScript", "C++", "C#",
+    "Go", "Rust", "SQL", "Ruby", "PHP", "Swift", "Kotlin",
+]
+DEFAULT_CODE_LANGUAGE = os.environ.get("CODE_LANGUAGE", "Auto")
+
+# How much of an answer is code vs. spoken explanation.
+#   Balanced        — a sentence of reasoning plus the smallest snippet
+#   Snippet only    — code, nothing else
+#   Text only       — spoken explanation, no code at all
+#   Full walkthrough— complete code, then approach, then decisions made
+ANSWER_STYLES = ["Balanced", "Snippet only", "Text only", "Full walkthrough"]
+DEFAULT_ANSWER_STYLE = os.environ.get("ANSWER_STYLE", "Balanced")
+
 # === Context ===
 CONTEXT_FILE = "context/interview-context.md"
 MAX_CONTEXT_CHARS = 8000  # trim context if too long

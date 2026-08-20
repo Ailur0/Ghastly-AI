@@ -23,6 +23,8 @@ import time
 import logging
 import ctypes
 import random
+
+import file_context
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -38,11 +40,12 @@ try:
     from PyQt5.QtWidgets import (
         QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
         QTextEdit, QFrame, QGraphicsDropShadowEffect, QPushButton,
-        QSizePolicy
+        QSizePolicy, QDialog, QListWidget, QListWidgetItem, QComboBox,
+        QFileDialog
     )
     from PyQt5.QtCore import (
         Qt, QTimer, pyqtSignal, QObject, QPoint, QPropertyAnimation,
-        QEasingCurve, QSize
+        QEasingCurve, QSize, QEvent
     )
     from PyQt5.QtGui import (
         QFont, QColor, QTextCursor, QCursor, QPainter, QPen, QBrush
@@ -51,6 +54,46 @@ try:
 except ImportError:
     HAS_PYQT = False
     logger.warning("PyQt5 not installed")
+
+
+# ════════════════════════════════════════════════════════════════
+#  Screen-capture exclusion
+# ════════════════════════════════════════════════════════════════
+def exclude_from_capture(widget) -> bool:
+    """
+    Hide one top-level window's pixels from screen capture.
+
+    WDA_EXCLUDEFROMCAPTURE applies per HWND, so every window the app puts on
+    screen needs its own call — the affinity set on the overlay does not
+    inherit to anything else.
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        ctypes.windll.user32.SetWindowDisplayAffinity(
+            int(widget.winId()), WDA_EXCLUDEFROMCAPTURE)
+        return True
+    except Exception as e:
+        logger.error(f"Capture exclusion failed for {widget}: {e}")
+        return False
+
+
+if HAS_PYQT:
+    class CaptureShield(QObject):
+        """
+        Application-wide event filter that excludes every window the app shows.
+
+        Tooltips, combo-box dropdowns and menus are separate top-level windows
+        owned by Qt, not children of the overlay — so they were being captured
+        in a screen share while the overlay itself stayed invisible. Hovering a
+        button was enough to leak its description. Filtering Show events
+        catches them all, including any Qt creates internally later.
+        """
+
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.Show and isinstance(obj, QWidget) and obj.isWindow():
+                exclude_from_capture(obj)
+            return False
 
 
 # ════════════════════════════════════════════════════════════════
@@ -158,6 +201,277 @@ if HAS_PYQT:
             event.accept()
 
 
+    class SetupDialog(QDialog):
+        """
+        Setup panel: attach resumes/notes, and pick the language code answers
+        should be written in.
+
+        Kept capture-excluded like the overlay — a separate top-level window
+        would otherwise be plainly visible in a screen share even though the
+        overlay behind it is not. Same reason the file picker below is forced
+        to Qt's own widget instead of the native Windows one: a native dialog
+        is not our window, so we cannot hide it from capture.
+        """
+
+        LABEL_CSS = ("color:#0369A1;font-family:'Segoe UI',sans-serif;"
+                     "font-size:11px;font-weight:700;letter-spacing:0.6px;"
+                     "background:transparent;border:none;")
+        BTN_CSS = """
+            QPushButton {
+                background: rgba(2,132,199,0.10);
+                color: #0F172A;
+                border: 1px solid rgba(2,132,199,0.35);
+                border-radius: 7px;
+                padding: 6px 12px;
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover  { background: rgba(2,132,199,0.20); }
+            QPushButton:disabled { color:#94A3B8; border-color:rgba(148,163,184,0.4); }
+        """
+
+        def __init__(self, languages, current_language, styles, current_style,
+                     on_changed, parent=None):
+            super().__init__(parent)
+            self.on_changed = on_changed          # (kind, value) -> None
+            self.setWindowTitle("Ghastly AI — Setup")
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint
+                                | Qt.WindowStaysOnTopHint | Qt.Tool)
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+            self.setFixedWidth(400)
+
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(10, 10, 10, 10)
+
+            card = QFrame()
+            card.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(255,255,255,0.97);
+                    border: 1.5px solid rgba(203,213,225,0.9);
+                    border-radius: 14px;
+                }
+            """)
+            shadow = QGraphicsDropShadowEffect()
+            shadow.setBlurRadius(32)
+            shadow.setColor(QColor(0, 0, 0, 55))
+            shadow.setOffset(0, 8)
+            card.setGraphicsEffect(shadow)
+            outer.addWidget(card)
+
+            lay = QVBoxLayout(card)
+            lay.setContentsMargins(16, 12, 16, 14)
+            lay.setSpacing(8)
+
+            # ── header (doubles as the drag handle) ──
+            header = DraggableWidget()
+            header.setFixedHeight(26)
+            header.setStyleSheet("background:transparent;border:none;")
+            hl = QHBoxLayout(header)
+            hl.setContentsMargins(0, 0, 0, 0)
+            title = QLabel("Setup")
+            title.setStyleSheet("color:#0F172A;font-family:'Segoe UI',sans-serif;"
+                                "font-size:14px;font-weight:700;background:transparent;border:none;")
+            hl.addWidget(title)
+            hl.addStretch()
+            close_btn = QPushButton("✕")
+            close_btn.setFixedSize(20, 20)
+            close_btn.setStyleSheet("""
+                QPushButton { background:transparent;border:none;color:#64748B;
+                              font-size:13px;font-weight:700;border-radius:5px; }
+                QPushButton:hover { background:rgba(239,68,68,0.15);color:#DC2626; }
+            """)
+            close_btn.clicked.connect(self.close)
+            hl.addWidget(close_btn)
+            lay.addWidget(header)
+
+            # ── documents ──
+            docs_label = QLabel("DOCUMENTS")
+            docs_label.setStyleSheet(self.LABEL_CSS)
+            lay.addWidget(docs_label)
+
+            self.file_list = QListWidget()
+            self.file_list.setFixedHeight(104)
+            self.file_list.setStyleSheet("""
+                QListWidget {
+                    background: rgba(241,245,249,0.85);
+                    border: 1px solid rgba(203,213,225,0.9);
+                    border-radius: 8px;
+                    font-family: 'Segoe UI', sans-serif;
+                    font-size: 12px;
+                    color: #0F172A;
+                    padding: 4px;
+                }
+                QListWidget::item { padding: 3px 4px; border-radius: 4px; }
+                QListWidget::item:selected { background: rgba(2,132,199,0.18); color:#0F172A; }
+            """)
+            lay.addWidget(self.file_list)
+
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            self.add_btn = QPushButton("Add files…")
+            self.remove_btn = QPushButton("Remove")
+            self.clear_btn = QPushButton("Clear all")
+            for b in (self.add_btn, self.remove_btn, self.clear_btn):
+                b.setStyleSheet(self.BTN_CSS)
+                row.addWidget(b)
+            row.addStretch()
+            lay.addLayout(row)
+            self.add_btn.clicked.connect(self._pick_files)
+            self.remove_btn.clicked.connect(self._remove_selected)
+            self.clear_btn.clicked.connect(self._clear_all)
+
+            self.status = QLabel("")
+            self.status.setWordWrap(True)
+            self.status.setStyleSheet("color:#334155;font-family:'Segoe UI',sans-serif;"
+                                      "font-size:11px;background:transparent;border:none;")
+            lay.addWidget(self.status)
+
+            # ── answer language ──
+            lang_label = QLabel("ANSWER LANGUAGE")
+            lang_label.setStyleSheet(self.LABEL_CSS)
+            lay.addWidget(lang_label)
+
+            self.lang_combo = QComboBox()
+            self.lang_combo.addItems(languages)
+            if current_language in languages:
+                self.lang_combo.setCurrentText(current_language)
+            self.lang_combo.setStyleSheet("""
+                QComboBox {
+                    background: rgba(241,245,249,0.85);
+                    border: 1px solid rgba(203,213,225,0.9);
+                    border-radius: 8px;
+                    padding: 5px 8px;
+                    font-family: 'Segoe UI', sans-serif;
+                    font-size: 12px;
+                    color: #0F172A;
+                }
+                QComboBox::drop-down { border: none; width: 18px; }
+                QComboBox QAbstractItemView {
+                    background: #FFFFFF;
+                    border: 1px solid rgba(203,213,225,0.9);
+                    selection-background-color: rgba(2,132,199,0.18);
+                    selection-color: #0F172A;
+                    color: #0F172A;
+                    outline: none;
+                }
+            """)
+            self.lang_combo.currentTextChanged.connect(self._language_changed)
+            lay.addWidget(self.lang_combo)
+
+            hint = QLabel("Auto follows whatever the question implies.")
+            hint.setStyleSheet("color:#64748B;font-family:'Segoe UI',sans-serif;"
+                               "font-size:11px;background:transparent;border:none;")
+            lay.addWidget(hint)
+
+            # ── answer style ──
+            style_label = QLabel("ANSWER STYLE")
+            style_label.setStyleSheet(self.LABEL_CSS)
+            lay.addWidget(style_label)
+
+            self.style_combo = QComboBox()
+            self.style_combo.addItems(styles)
+            if current_style in styles:
+                self.style_combo.setCurrentText(current_style)
+            self.style_combo.setStyleSheet(self.lang_combo.styleSheet())
+            self.style_combo.currentTextChanged.connect(self._style_changed)
+            lay.addWidget(self.style_combo)
+
+            self.style_hint = QLabel("")
+            self.style_hint.setWordWrap(True)
+            self.style_hint.setStyleSheet("color:#64748B;font-family:'Segoe UI',sans-serif;"
+                                          "font-size:11px;background:transparent;border:none;")
+            lay.addWidget(self.style_hint)
+            self._describe_style(self.style_combo.currentText())
+
+            self.refresh_files()
+
+        # ── capture exclusion ──
+        def showEvent(self, event):
+            super().showEvent(event)
+            exclude_from_capture(self)
+
+        # ── file handling ──
+        def refresh_files(self):
+            self.file_list.clear()
+            entries = file_context.list_files()
+            for stored, original, chars in entries:
+                item = QListWidgetItem(f"{original}  ·  {chars:,} chars")
+                item.setData(Qt.UserRole, stored)
+                self.file_list.addItem(item)
+            if not entries:
+                placeholder = QListWidgetItem("No documents yet — add a resume to start.")
+                placeholder.setFlags(Qt.NoItemFlags)
+                self.file_list.addItem(placeholder)
+            self.remove_btn.setEnabled(bool(entries))
+            self.clear_btn.setEnabled(bool(entries))
+
+        def _pick_files(self):
+            dlg = QFileDialog(self, "Add resume or notes")
+            dlg.setFileMode(QFileDialog.ExistingFiles)
+            # Qt's own dialog, not the native one — see the class docstring.
+            dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+            dlg.setNameFilter("Documents (*.pdf *.docx *.txt *.md *.json *.csv);;All files (*)")
+            dlg.show()
+            exclude_from_capture(dlg)
+            if not dlg.exec_():
+                return
+
+            added, errors = 0, []
+            for path in dlg.selectedFiles():
+                try:
+                    file_context.add_file(path)
+                    added += 1
+                except Exception as e:
+                    errors.append(f"{os.path.basename(path)}: {e}")
+
+            self.refresh_files()
+            if added:
+                self.on_changed("files", added)
+            msg = f"Added {added} file{'s' if added != 1 else ''}." if added else ""
+            if errors:
+                msg = (msg + "  " if msg else "") + "Skipped — " + "; ".join(errors)
+            self.status.setText(msg)
+
+        def _remove_selected(self):
+            item = self.file_list.currentItem()
+            stored = item.data(Qt.UserRole) if item else None
+            if not stored:
+                self.status.setText("Select a document first.")
+                return
+            file_context.remove_file(stored)
+            self.refresh_files()
+            self.on_changed("files", -1)
+            self.status.setText("Removed.")
+
+        def _clear_all(self):
+            n = file_context.clear_files()
+            self.refresh_files()
+            self.on_changed("files", 0)
+            self.status.setText(f"Cleared {n} document{'s' if n != 1 else ''}.")
+
+        STYLE_HINTS = {
+            "Balanced": "A sentence of reasoning, then the smallest snippet.",
+            "Snippet only": "Code and nothing else.",
+            "Text only": "Spoken explanation, no code at all.",
+            "Full walkthrough": "Full code, then the approach, then the decisions made.",
+        }
+
+        def _describe_style(self, text):
+            self.style_hint.setText(self.STYLE_HINTS.get(text, ""))
+
+        def _style_changed(self, text):
+            self._describe_style(text)
+            self.on_changed("style", text)
+            self.status.setText(f"Answer style: {text}.")
+
+        def _language_changed(self, text):
+            self.on_changed("language", text)
+            self.status.setText(f"Code answers will use {text}."
+                                if text != "Auto" else
+                                "Code answers follow the question.")
+
+
 # ════════════════════════════════════════════════════════════════
 #  Status definitions
 # ════════════════════════════════════════════════════════════════
@@ -214,6 +528,14 @@ class GhostOverlay:
         self.OPACITY_TRANSLUCENT = kwargs.get("opacity_translucent", self.OPACITY_TRANSLUCENT)
         # List of (label, key-combo) pairs, e.g. [("Screen capture", "ctrl+shift+h")]
         self.hotkeys = kwargs.get("hotkeys", [])
+        # Languages offered in the setup panel, and the one selected now.
+        self.languages = kwargs.get("languages", ["Auto"])
+        self.code_language = kwargs.get("code_language", "Auto")
+        # Answer shapes offered in the setup panel, and the one selected now.
+        self.answer_styles = kwargs.get("answer_styles", ["Balanced"])
+        self.answer_style = kwargs.get("answer_style", "Balanced")
+        # Called as on_setup_changed(kind, value) with kind "files"|"language".
+        self.on_setup_changed = kwargs.get("on_setup_changed", None)
 
         self.app = None
         self.window = None
@@ -228,6 +550,8 @@ class GhostOverlay:
 
         self._grips = {}
         self._expanded_h = None
+        self._setup_dialog = None
+        self._capture_shield = None
 
         self._is_running = False
         self._expanded = True
@@ -288,6 +612,10 @@ class GhostOverlay:
     # ────────────────────────────────────────────────
     def _create_window(self):
         self.app = QApplication.instance() or QApplication(sys.argv)
+
+        # Catch every window the app opens — tooltips and dropdowns included.
+        self._capture_shield = CaptureShield()
+        self.app.installEventFilter(self._capture_shield)
 
         total_w = max(self.BAR_W, self.PANEL_W) + 24
         total_h = self.BAR_H + self.PANEL_H + 32
@@ -366,6 +694,25 @@ class GhostOverlay:
         """)
         bar_layout.addWidget(self.info_btn)
 
+        # Setup button (documents + answer language)
+        self.setup_btn = QPushButton("📎")
+        self.setup_btn.setFixedSize(28, 28)
+        self.setup_btn.setToolTip("Documents & answer language")
+        self.setup_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                border-radius: 6px;
+                font-size: 15px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background: rgba(14, 165, 233, 0.12);
+            }
+        """)
+        self.setup_btn.clicked.connect(self._open_setup)
+        bar_layout.addWidget(self.setup_btn)
+
         # Title
         self.title_label = QLabel("Ghastly AI")
         self.title_label.setStyleSheet("""
@@ -389,8 +736,7 @@ class GhostOverlay:
 
         # Window controls
         for color, hover, tip, handler in [
-            ("#FEBC2E", "#F0A500", "Minimize", self._on_minimize),
-            ("#FF5F57", "#FF3B30", "Close",    self._on_close),
+            ("#FF5F57", "#FF3B30", "Close", self._on_close),
         ]:
             btn = QPushButton()
             btn.setFixedSize(14, 14)
@@ -593,6 +939,34 @@ class GhostOverlay:
         self._position_grips()
         logger.info(f"Panel {'expanded' if self._expanded else 'collapsed'}")
 
+    def _open_setup(self):
+        """Open (or re-focus) the setup panel next to the overlay."""
+        if self._setup_dialog is None:
+            self._setup_dialog = SetupDialog(
+                self.languages, self.code_language,
+                self.answer_styles, self.answer_style,
+                self._on_setup_changed, parent=self.window)
+        else:
+            self._setup_dialog.refresh_files()
+
+        geo = self.window.geometry()
+        self._setup_dialog.move(geo.x(), geo.y() + geo.height() + 8)
+        self._setup_dialog.show()
+        self._setup_dialog.raise_()
+        self._setup_dialog.activateWindow()
+
+    def _on_setup_changed(self, kind, value):
+        """Relay a setup-panel change to whoever owns the context."""
+        if kind == "language":
+            self.code_language = value
+        elif kind == "style":
+            self.answer_style = value
+        if callable(self.on_setup_changed):
+            try:
+                self.on_setup_changed(kind, value)
+            except Exception as e:
+                logger.error(f"Setup callback failed: {e}")
+
     def _toggle_opacity(self):
         """Toggle overlay opacity between opaque and translucent (sun/moon icon)."""
         self._opaque = not self._opaque
@@ -616,10 +990,6 @@ class GhostOverlay:
             formatted = "+".join(part.capitalize() for part in combo.split("+"))
             lines.append(f"{label} — {formatted}")
         return "\n".join(lines)
-
-    def _on_minimize(self):
-        if self.window:
-            self.window.showMinimized()
 
     def _on_close(self):
         logger.info("Close clicked")

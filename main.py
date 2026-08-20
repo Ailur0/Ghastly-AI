@@ -22,7 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from audio_capture import AudioCapture
 from transcribe import transcribe, is_question
-from llm_query import query_ollama_stream, query_ollama_vision_stream
+from llm_query import (
+    query_ollama_stream, query_ollama_vision_stream, tokens_for_style
+)
 from context_manager import ContextManager
 from ghost_overlay import GhostOverlay
 import base64
@@ -61,6 +63,11 @@ class GhostInterviewAgent:
             opacity_opaque=config.OVERLAY_OPACITY_OPAQUE,
             opacity_translucent=config.OVERLAY_OPACITY_TRANSLUCENT,
             hotkeys=[("Screen capture", config.SCREEN_CAPTURE_HOTKEY)],
+            languages=config.CODE_LANGUAGES,
+            code_language=config.DEFAULT_CODE_LANGUAGE,
+            answer_styles=config.ANSWER_STYLES,
+            answer_style=config.DEFAULT_ANSWER_STYLE,
+            on_setup_changed=self.on_setup_changed,
         )
 
         self.screen_capture = ScreenCapture()
@@ -74,6 +81,19 @@ class GhostInterviewAgent:
 
         self.is_running = False
     
+    def on_setup_changed(self, kind: str, value):
+        """
+        Setup panel callback: documents were added/removed, or the answer
+        language changed. Runs on the Qt thread.
+        """
+        if kind == "files":
+            chars = self.context_mgr.reload_context()
+            logger.info(f"Context reloaded after upload: {chars} chars")
+        elif kind == "language":
+            self.context_mgr.set_code_language(value)
+        elif kind == "style":
+            self.context_mgr.set_answer_style(value)
+
     def initialize(self):
         """Initialize context, overlay, and verify API connectivity."""
         logger.info("=" * 50)
@@ -85,6 +105,8 @@ class GhostInterviewAgent:
         self.context_mgr.load_context()
         self.context_mgr.load_state()
         self.context_mgr.reset_state()  # fresh interview
+        self.context_mgr.set_code_language(config.DEFAULT_CODE_LANGUAGE)
+        self.context_mgr.set_answer_style(config.DEFAULT_ANSWER_STYLE)
         logger.info(f"Context loaded: {len(self.context_mgr.static_context)} chars")
         
         # Start overlay window on main thread
@@ -154,7 +176,9 @@ class GhostInterviewAgent:
                     api_key=config.OLLAMA_API_KEY,
                     model=config.OLLAMA_MODEL,
                     base_url=config.OLLAMA_BASE_URL,
-                    max_tokens=config.MAX_ANSWER_CHARS // 4
+                    max_tokens=tokens_for_style(
+                        self.context_mgr.get_answer_style(),
+                        config.MAX_ANSWER_CHARS // 4)
                 ):
                     if isinstance(chunk, dict) and "_meta" in chunk:
                         meta = chunk["_meta"]
@@ -239,7 +263,9 @@ class GhostInterviewAgent:
                 api_key=config.OLLAMA_API_KEY,
                 model=config.OLLAMA_VISION_MODEL,
                 base_url=config.OLLAMA_BASE_URL,
-                max_tokens=config.MAX_ANSWER_CHARS // 4
+                max_tokens=tokens_for_style(
+                    self.context_mgr.get_answer_style(),
+                    config.MAX_ANSWER_CHARS // 4)
             ):
                 if isinstance(chunk, dict) and "_meta" in chunk:
                     meta = chunk["_meta"]

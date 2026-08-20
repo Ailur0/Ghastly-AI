@@ -18,6 +18,8 @@ import time
 import logging
 from typing import Tuple
 
+import file_context
+
 logger = logging.getLogger(__name__)
 
 # Mood detection keywords
@@ -82,7 +84,13 @@ class ContextManager:
             "current_topic": "intro",
             "question_count": 0,
             "session_start": None,
-            "last_question_time": None
+            "last_question_time": None,
+            # Language the candidate wants code answers in; "Auto" follows
+            # whatever the question implies.
+            "code_language": "Auto",
+            # Shape of the answer: Balanced / Snippet only / Text only /
+            # Full walkthrough.
+            "answer_style": "Balanced"
         }
     
     def load_context(self):
@@ -98,9 +106,56 @@ class ContextManager:
             
             logger.info(f"Loaded context: {len(self.static_context)} chars")
         except FileNotFoundError:
-            logger.error(f"Context file not found: {self.context_file}")
+            logger.info(f"No context file at {self.context_file}")
+            self.static_context = ""
+
+        self._append_uploads()
+
+        if not self.static_context:
             self.static_context = "No context available."
     
+    def _append_uploads(self):
+        """Fold uploaded resumes/notes into the static context."""
+        try:
+            uploaded = file_context.combined_text()
+        except Exception as e:
+            logger.error(f"Could not read uploads: {e}")
+            return
+        if not uploaded:
+            return
+
+        block = "Candidate documents:\n" + uploaded
+        self.static_context = (self.static_context + "\n\n" + block
+                               if self.static_context else block)
+
+        if len(self.static_context) > self.max_context_chars:
+            self.static_context = self.static_context[:self.max_context_chars]
+            logger.warning(f"Context truncated to {self.max_context_chars} chars")
+        logger.info(f"Context with uploads: {len(self.static_context)} chars")
+
+    def reload_context(self):
+        """Re-read context + uploads after the user adds or removes a file."""
+        self.load_context()
+        return len(self.static_context)
+
+    def set_code_language(self, language: str):
+        """Set the language code answers should be written in."""
+        self.state["code_language"] = language or "Auto"
+        self.save_state()
+        logger.info(f"Code language set to {self.state['code_language']}")
+
+    def get_code_language(self) -> str:
+        return self.state.get("code_language", "Auto")
+
+    def set_answer_style(self, style: str):
+        """Set how much of the answer is code vs. spoken explanation."""
+        self.state["answer_style"] = style or "Balanced"
+        self.save_state()
+        logger.info(f"Answer style set to {self.state['answer_style']}")
+
+    def get_answer_style(self) -> str:
+        return self.state.get("answer_style", "Balanced")
+
     def load_state(self):
         """Load state from JSON file. Call at startup."""
         try:
@@ -115,6 +170,9 @@ class ContextManager:
     def save_state(self):
         """Persist state to JSON file. Call after each question."""
         try:
+            parent = os.path.dirname(os.path.abspath(self.state_file))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             with open(self.state_file, 'w') as f:
                 json.dump(self.state, f, indent=2)
         except Exception as e:
@@ -214,7 +272,9 @@ class ContextManager:
         return self.state
     
     def reset_state(self):
-        """Reset state for a new interview session."""
+        """Reset state for a new interview session, keeping preferences."""
+        language = self.state.get("code_language", "Auto")
+        style = self.state.get("answer_style", "Balanced")
         self.state = {
             "questions_asked": [],
             "answers_given": [],
@@ -223,10 +283,13 @@ class ContextManager:
             "current_topic": "intro",
             "question_count": 0,
             "session_start": time.time(),
-            "last_question_time": None
+            "last_question_time": None,
+            "code_language": language,
+            "answer_style": style
         }
         self.save_state()
-        logger.info("State reset for new interview")
+        logger.info(f"State reset for new interview "
+                    f"(language={language}, style={style})")
 
 
 if __name__ == "__main__":

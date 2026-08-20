@@ -10,6 +10,7 @@ Uses Ollama /api/chat endpoint for text queries (NOT OpenAI-compatible /v1/chat/
 
 import json
 import logging
+import re
 import time
 import os
 import sys
@@ -34,16 +35,54 @@ Sound like a person, not a document:
 - Spoken English with contractions, in first person ("I'd usually...", "The way I think about it...")
 - Vary sentence length. A short one after a long one is what real speech sounds like.
 - Lead with the actual answer, then the why. No preamble, no "Great question"
-- No markdown, no bullets, no headings, no ** — it renders as raw text on screen
+- No markdown at all: no bullets, no headings, no **, and no ``` fences.
+  It renders as raw text, so write code as plain indented lines.
 - Concrete beats abstract: a real number, tool, or example instead of a definition
 - Thinking out loud is fine ("honestly", "the tradeoff I'd worry about is...")
 - No corporate filler: leverage, utilize, robust solution, seamlessly, at scale
 
-Coding question: say the key idea in a sentence, then the smallest snippet that shows it.
+Coding question: say the key idea in a sentence, then the smallest snippet that shows it,
+in the language the context asks for if it names one.
 Behavioral question: tell it as a quick story — what was going on, what you did, how it
 landed — without ever labelling those parts.
 Stay in the candidate's own voice and background from the context. Don't reuse phrasing
 from previous answers."""
+
+
+# What each answer style asks for, and the room it needs to say it. The
+# system prompt caps answers at 150 words, so a style that wants more has to
+# say so explicitly.
+ANSWER_STYLE_RULES = {
+    "Balanced": "",
+    "Snippet only": (
+        "Answer with code and nothing else — no lead-in, no explanation, no "
+        "sign-off. Just the smallest snippet that solves it. If the question "
+        "is not a coding question, answer it in one short spoken sentence."
+    ),
+    "Text only": (
+        "Explain it out loud, in words only. No code whatsoever, not even a "
+        "one-liner or a function name in isolation — describe the approach the "
+        "way you would to someone with no screen in front of them."
+    ),
+    "Full walkthrough": (
+        "Give the whole thing, in this order and with no headings: the "
+        "complete working code first, then a short spoken paragraph on the "
+        "approach and why it works, then the decisions and tradeoffs you made "
+        "along the way. Up to 300 words — the 150-word cap does not apply here."
+    ),
+}
+
+ANSWER_STYLE_TOKENS = {
+    "Balanced": 250,
+    "Snippet only": 200,
+    "Text only": 220,
+    "Full walkthrough": 700,
+}
+
+
+def tokens_for_style(style: str, default: int = 250) -> int:
+    """Token budget an answer style needs — a walkthrough truncates at 250."""
+    return ANSWER_STYLE_TOKENS.get(style, default)
 
 
 def build_prompt(question: str, context: str, state: dict) -> str:
@@ -59,6 +98,14 @@ def build_prompt(question: str, context: str, state: dict) -> str:
         for i, (q, a) in enumerate(recent, 1):
             recent_qa += f"Q{i}: {q}\nA{i}: {a[:200]}...\n"
     
+    language = state.get("code_language", "Auto")
+    language_line = ""
+    if language and language != "Auto":
+        language_line = f"\nWrite any code in {language}."
+
+    style_rule = ANSWER_STYLE_RULES.get(state.get("answer_style", "Balanced"), "")
+    style_line = f"\n{style_rule}" if style_rule else ""
+
     mood = state.get("interviewer_mood", "neutral")
     persona = state.get("interviewer_persona", "technical")
     topic = state.get("current_topic", "general")
@@ -68,7 +115,7 @@ def build_prompt(question: str, context: str, state: dict) -> str:
 
 Interviewer mood: {mood}
 Interviewer style: {persona}
-Current topic: {topic}
+Current topic: {topic}{language_line}{style_line}
 {recent_qa}
 
 Question: {question}
@@ -76,6 +123,32 @@ Question: {question}
 Answer:"""
     
     return prompt
+
+
+# A long answer sometimes arrives wrapped in ``` fences despite the prompt
+# saying not to — a "Full walkthrough" almost always does. The panel renders
+# raw text, so those would show up as literal backticks; strip them in transit.
+_FENCE_RE = re.compile(r"```[A-Za-z0-9_+\-]*\n?")
+# \Z, not $ — $ also matches just before a trailing newline, which would hold
+# back a fence that has already ended.
+_PARTIAL_FENCE_RE = re.compile(r"`{1,3}[A-Za-z0-9_+\-]*\Z")
+
+
+def _strip_fences(chunk: str, pending: str):
+    """
+    Remove fences from one streamed chunk.
+
+    A fence can straddle a chunk boundary, so trailing backticks (and any
+    language word after them) are held back and prepended to the next chunk.
+    Returns (text_to_yield, new_pending).
+    """
+    buf = pending + chunk
+    # Hold the ambiguous tail back FIRST: a bare ``` at the end of a chunk may
+    # still grow a language tag in the next one, and stripping it here would
+    # let that tag through as stray text.
+    match = _PARTIAL_FENCE_RE.search(buf)
+    head, still_pending = (buf[:match.start()], match.group()) if match else (buf, "")
+    return _FENCE_RE.sub("", head), still_pending
 
 
 def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
@@ -94,6 +167,7 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
     first_token_time = None
     total_text = ""
     token_count = 0
+    pending = ""
 
     try:
         response = requests.post(url, json=payload, headers=headers, stream=True, timeout=30)
@@ -124,12 +198,21 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
                     ttft_ms = (first_token_time - start_time) * 1000
                     logger.info(f"TTFT: {ttft_ms:.0f}ms")
 
-                total_text += content
-                token_count += 1
-                yield content
+                clean, pending = _strip_fences(content, pending)
+                if clean:
+                    total_text += clean
+                    token_count += 1
+                    yield clean
 
             if data.get("done", False):
                 break
+
+        # Flush whatever was held back waiting to see if it was a fence.
+        if pending:
+            tail = _FENCE_RE.sub("", pending).replace("`", "")
+            if tail:
+                total_text += tail
+                yield tail
 
         total_ms = (time.time() - start_time) * 1000
         ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else 0

@@ -16,7 +16,10 @@ requests==2.34.2
 mss==10.2.0
 keyboard==0.13.5
 
+# Resume / document uploads (PDF text extraction; .docx uses stdlib zip)
+pypdf==6.1.1
+
 # That's it. No torch, no openai-whisper, no heavy downloads.
 # STT: Groq cloud API (whisper-large-v3)
-# LLM: Ollama cloud API (glm-4.5)
-# Vision: OpenRouter API (openrouter/free)
+# LLM: Ollama cloud API (nemotron-3-super)
+# Vision: Ollama cloud API (gemma4:31b)
