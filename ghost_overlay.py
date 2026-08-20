@@ -8,10 +8,12 @@ Bright, clean, cloud-native aesthetic with:
   - Scrollable answer panel with glass Q&A cards
   - Sky-blue accent color throughout
 
+The cursor is pinned to a plain arrow over the entire overlay — hovering
+buttons, dragging the bar, and the text panel all keep the default shape,
+since WDA hides this window's pixels but not the OS cursor sprite.
+
 On Windows:
   - WDA_EXCLUDEFROMCAPTURE is always active (invisible to screen capture)
-  - Cursor is forced to a plain arrow so hovering doesn't reveal the overlay
-    in a screen capture (WDA hides this window's pixels, not the OS cursor)
 """
 
 import sys
@@ -229,7 +231,6 @@ class GhostOverlay:
         # ═══ COMMAND BAR ═══
         self.bar = DraggableWidget()
         self.bar.setFixedHeight(self.BAR_H)
-        self.bar.setCursor(QCursor(Qt.OpenHandCursor))
         self.bar.setStyleSheet(f"""
             QWidget {{
                 background-color: rgba(255, 255, 255, 0.78);
@@ -251,7 +252,6 @@ class GhostOverlay:
         # Opacity toggle button (sun = opaque, moon = translucent)
         self.opacity_btn = QPushButton("☀️")
         self.opacity_btn.setFixedSize(28, 28)
-        self.opacity_btn.setCursor(QCursor(Qt.PointingHandCursor))
         self.opacity_btn.setToolTip("Opaque — click to make translucent")
         self.opacity_btn.setStyleSheet("""
             QPushButton {
@@ -271,7 +271,6 @@ class GhostOverlay:
         # Info button (hover tooltip lists hotkeys)
         self.info_btn = QPushButton("ℹ️")
         self.info_btn.setFixedSize(28, 28)
-        self.info_btn.setCursor(QCursor(Qt.PointingHandCursor))
         self.info_btn.setToolTip(self._build_hotkeys_tooltip())
         self.info_btn.setStyleSheet("""
             QPushButton {
@@ -315,7 +314,6 @@ class GhostOverlay:
         ]:
             btn = QPushButton()
             btn.setFixedSize(14, 14)
-            btn.setCursor(QCursor(Qt.PointingHandCursor))
             btn.setToolTip(tip)
             btn.setStyleSheet(f"""
                 QPushButton {{
@@ -356,6 +354,7 @@ class GhostOverlay:
 
         self.text_widget = QTextEdit()
         self.text_widget.setReadOnly(True)
+        self.text_widget.viewport().setCursor(QCursor(Qt.ArrowCursor))
         self.text_widget.setStyleSheet("""
             QTextEdit {
                 background: transparent;
@@ -390,6 +389,13 @@ class GhostOverlay:
         root.addWidget(self.panel)
 
         # ── Show ──
+        # Force a plain arrow cursor everywhere over the overlay, in every
+        # state — hovering a button, dragging the bar, over the text panel.
+        # WDA_EXCLUDEFROMCAPTURE hides this window's pixels from screen
+        # capture, but NOT the OS mouse cursor sprite, so any cursor shape
+        # change would reveal that something interactive is here.
+        QApplication.setOverrideCursor(QCursor(Qt.ArrowCursor))
+
         self.window.setWindowOpacity(self.OPACITY_OPAQUE)
         self.window.show()
 
@@ -397,12 +403,6 @@ class GhostOverlay:
             self._hwnd = int(self.window.winId())
             # Always excluded from screen capture — not a toggle.
             self._set_wda(True)
-            # Force a plain arrow cursor everywhere over the overlay —
-            # WDA_EXCLUDEFROMCAPTURE hides this window's pixels from screen
-            # capture, but NOT the OS mouse cursor sprite, so a widget-specific
-            # cursor (e.g. the drag bar's OpenHandCursor) would otherwise
-            # reveal that something interactive is here.
-            QApplication.setOverrideCursor(QCursor(Qt.ArrowCursor))
 
         self._start_title_scramble()
 
