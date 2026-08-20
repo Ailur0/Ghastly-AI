@@ -44,7 +44,9 @@ try:
         Qt, QTimer, pyqtSignal, QObject, QPoint, QPropertyAnimation,
         QEasingCurve, QSize
     )
-    from PyQt5.QtGui import QFont, QColor, QTextCursor, QCursor
+    from PyQt5.QtGui import (
+        QFont, QColor, QTextCursor, QCursor, QPainter, QPen, QBrush
+    )
     HAS_PYQT = True
 except ImportError:
     HAS_PYQT = False
@@ -78,6 +80,81 @@ if HAS_PYQT:
 
         def mouseReleaseEvent(self, event):
             self._drag_pos = None
+            event.accept()
+
+
+    class ResizeGrip(QWidget):
+        """
+        Small square handle pinned to a corner of the window. Dragging one
+        resizes the window from that corner.
+
+        It deliberately sets no cursor of its own: the overlay pins a plain
+        arrow everywhere so hovering never hints that an invisible window is
+        there, which means the shape has to be the visible affordance.
+        """
+        SIZE = 12
+        MIN_W = 320
+        MIN_H = 140
+
+        def __init__(self, corner, parent=None):
+            super().__init__(parent)
+            self.corner = corner            # 'tl' | 'tr' | 'bl' | 'br'
+            self.setFixedSize(self.SIZE, self.SIZE)
+            self.setToolTip("Drag to resize")
+            self._press_global = None
+            self._start_geo = None
+
+        def paintEvent(self, event):
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            box = self.rect().adjusted(1, 1, -2, -2)
+            p.setPen(QPen(QColor(2, 132, 199, 220), 1.4))
+            p.setBrush(QBrush(QColor(255, 255, 255, 235)))
+            p.drawRoundedRect(box, 3, 3)
+            # tiny cross inside, so it reads as a handle and not a bullet
+            p.setPen(QPen(QColor(2, 132, 199, 170), 1.2))
+            c = box.center()
+            p.drawLine(c.x() - 2, c.y(), c.x() + 2, c.y())
+            p.drawLine(c.x(), c.y() - 2, c.x(), c.y() + 2)
+
+        def mousePressEvent(self, event):
+            if event.button() == Qt.LeftButton:
+                self._press_global = event.globalPos()
+                self._start_geo = self.window().geometry()
+                event.accept()
+
+        def mouseMoveEvent(self, event):
+            if self._press_global is None:
+                return
+            g = self._start_geo
+            d = event.globalPos() - self._press_global
+            x, y, w, h = g.x(), g.y(), g.width(), g.height()
+
+            # Dragging a left/top corner moves the origin as well as the size.
+            if "l" in self.corner:
+                x, w = x + d.x(), w - d.x()
+            else:
+                w = w + d.x()
+            if "t" in self.corner:
+                y, h = y + d.y(), h - d.y()
+            else:
+                h = h + d.y()
+
+            # Clamp, keeping the opposite edge anchored where the user put it.
+            if w < self.MIN_W:
+                if "l" in self.corner:
+                    x -= self.MIN_W - w
+                w = self.MIN_W
+            if h < self.MIN_H:
+                if "t" in self.corner:
+                    y -= self.MIN_H - h
+                h = self.MIN_H
+
+            self.window().setGeometry(x, y, w, h)
+            event.accept()
+
+        def mouseReleaseEvent(self, event):
+            self._press_global = None
             event.accept()
 
 
@@ -148,6 +225,9 @@ class GhostOverlay:
         self.info_btn = None
         self.title_label = None
         self._scramble_timer = None
+
+        self._grips = {}
+        self._expanded_h = None
 
         self._is_running = False
         self._expanded = True
@@ -388,6 +468,15 @@ class GhostOverlay:
 
         root.addWidget(self.panel)
 
+        # ── Resize grips ──
+        # Four corner handles, repositioned whenever the window changes size.
+        # They are children of the window rather than layout items, so they
+        # float over the card instead of taking space in it.
+        self._expanded_h = total_h
+        self._grips = {c: ResizeGrip(c, self.window) for c in ("tl", "tr", "bl", "br")}
+        self.window.resizeEvent = lambda e: self._position_grips()
+        self._position_grips()
+
         # ── Show ──
         # Force a plain arrow cursor everywhere over the overlay, in every
         # state — hovering a button, dragging the bar, over the text panel.
@@ -472,18 +561,36 @@ class GhostOverlay:
     # ────────────────────────────────────────────────
     #  Toggle handlers
     # ────────────────────────────────────────────────
+    def _position_grips(self):
+        """Pin the four handles to the window corners; hide them when collapsed."""
+        if not self._grips:
+            return
+        w, h = self.window.width(), self.window.height()
+        s, pad = ResizeGrip.SIZE, 4
+        for corner, grip in self._grips.items():
+            grip.move(pad if "l" in corner else w - s - pad,
+                      pad if "t" in corner else h - s - pad)
+            grip.setVisible(self._expanded)
+            grip.raise_()
+
     def _toggle_panel(self):
         """Expand / collapse the answer panel."""
         self._expanded = not self._expanded
         self.panel.setVisible(self._expanded)
-        # Resize window
-        if self._expanded:
-            h = self.BAR_H + self.PANEL_H + 32
-        else:
-            h = self.BAR_H + 28
         w = self.window.width()
-        self.window.setFixedHeight(h)
-        self.window.resize(w, h)
+
+        if self._expanded:
+            # Undo the collapsed height pin, otherwise the grips can never
+            # grow the window again.
+            self.window.setMinimumHeight(ResizeGrip.MIN_H)
+            self.window.setMaximumHeight(16777215)
+            self.window.resize(w, self._expanded_h or (self.BAR_H + self.PANEL_H + 32))
+        else:
+            # Remember whatever height the user resized to before collapsing.
+            self._expanded_h = self.window.height()
+            self.window.setFixedHeight(self.BAR_H + 28)
+
+        self._position_grips()
         logger.info(f"Panel {'expanded' if self._expanded else 'collapsed'}")
 
     def _toggle_opacity(self):
