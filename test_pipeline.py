@@ -83,14 +83,14 @@ def main():
             
             # Check if it's a question
             if not is_question(text):
-                logger.info(f"  Not a question, skipping")
+                logger.info("  Not a question, skipping")
                 continue
             
             question_count += 1
             print(f"\n{'='*60}")
             print(f"🎤 QUESTION #{question_count}: {text}")
             print(f"{'='*60}")
-            print(f"📝 ANSWER: ", end="", flush=True)
+            print("📝 ANSWER: ", end="", flush=True)
             
             # Query Ollama LLM
             t1 = time.time()

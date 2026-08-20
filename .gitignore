@@ -11,6 +11,11 @@ env/
 build/
 dist/
 
+# Runtime app data — session state churns on every launch, and uploaded
+# documents are the user's resume. Neither belongs in the repo.
+context/interview-state.json
+context/uploaded/
+
 # Whisper models (downloaded at runtime)
 *.pt
 

@@ -16,7 +16,6 @@ import os
 import sys
 import time
 import logging
-from typing import Tuple
 
 import file_context
 

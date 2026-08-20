@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from screen_capture import ScreenCapture, HotkeyListener
-from llm_query import query_openrouter_vision_stream
+from llm_query import query_ollama_vision_stream
 from context_manager import ContextManager
 
 logging.basicConfig(
@@ -34,20 +34,20 @@ def run_capture_and_query(screen_capture: ScreenCapture, cm: ContextManager):
 
     image_b64 = base64.b64encode(png_bytes).decode("utf-8")
 
-    print(f"Querying {config.OPENROUTER_VISION_MODEL}...")
+    print(f"Querying {config.OLLAMA_VISION_MODEL}...")
     print(f"{'='*60}\n")
 
     t0 = time.time()
     full_answer = ""
     meta = None
-    for chunk in query_openrouter_vision_stream(
+    for chunk in query_ollama_vision_stream(
         image_b64=image_b64,
         prompt=config.SCREEN_CAPTURE_PROMPT,
         context=cm.get_context_string(),
         state=cm.get_state(),
-        api_key=config.OPENROUTER_API_KEY,
-        model=config.OPENROUTER_VISION_MODEL,
-        base_url=config.OPENROUTER_BASE_URL,
+        api_key=config.OLLAMA_API_KEY,
+        model=config.OLLAMA_VISION_MODEL,
+        base_url=config.OLLAMA_BASE_URL,
     ):
         if isinstance(chunk, dict) and "_meta" in chunk:
             meta = chunk["_meta"]

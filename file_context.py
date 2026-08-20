@@ -14,9 +14,7 @@ PyInstaller temp bundle — that directory is deleted when the app exits.
 """
 
 import logging
-import os
 import re
-import shutil
 import sys
 import zipfile
 from pathlib import Path

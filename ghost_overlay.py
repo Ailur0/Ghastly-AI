@@ -18,14 +18,11 @@ On Windows:
 
 import sys
 import os
-import threading
-import time
 import logging
 import ctypes
 import random
 
 import file_context
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +37,12 @@ try:
     from PyQt5.QtWidgets import (
         QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
         QTextEdit, QFrame, QGraphicsDropShadowEffect, QPushButton,
-        QSizePolicy, QDialog, QListWidget, QListWidgetItem, QComboBox,
+        QDialog, QListWidget, QListWidgetItem, QComboBox,
         QFileDialog, QLineEdit
     )
-    from PyQt5.QtCore import (
-        Qt, QTimer, pyqtSignal, QObject, QPoint, QPropertyAnimation,
-        QEasingCurve, QSize, QEvent
-    )
+    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent
     from PyQt5.QtGui import (
-        QFont, QColor, QTextCursor, QCursor, QPainter, QPen, QBrush
+        QColor, QTextCursor, QCursor, QPainter, QPen, QBrush
     )
     HAS_PYQT = True
 except ImportError:
@@ -678,7 +672,7 @@ class GhostOverlay:
         # ═══ COMMAND BAR ═══
         self.bar = DraggableWidget()
         self.bar.setFixedHeight(self.BAR_H)
-        self.bar.setStyleSheet(f"""
+        self.bar.setStyleSheet("""
             QWidget {{
                 background-color: rgba(255, 255, 255, 0.78);
                 border: 1px solid rgba(255, 255, 255, 0.35);

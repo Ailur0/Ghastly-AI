@@ -219,8 +219,8 @@ class GhostInterviewAgent:
             logger.info(f"Screen capture hotkey registered: {config.SCREEN_CAPTURE_HOTKEY}")
         else:
             logger.warning(
-                f"Screen capture hotkey registration failed — "
-                f"screen capture disabled, audio pipeline unaffected"
+                "Screen capture hotkey registration failed — "
+                "screen capture disabled, audio pipeline unaffected"
             )
 
         # Verify Groq API key is set
