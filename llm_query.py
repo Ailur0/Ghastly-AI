@@ -56,8 +56,12 @@ ANSWER_STYLE_RULES = {
     "Balanced": "",
     "Snippet only": (
         "Answer with code and nothing else — no lead-in, no explanation, no "
-        "sign-off. Just the smallest snippet that solves it. If the question "
-        "is not a coding question, answer it in one short spoken sentence."
+        "sign-off, just the smallest snippet that solves it. Anything you must "
+        "say goes in a short comment inside the code. Treat every technical "
+        "question as a coding question: if it asks about an approach or a "
+        "design, show the code that implements it rather than describing it. "
+        "Only a behavioural question ('tell me about a time...') gets words, "
+        "and then just one or two sentences."
     ),
     "Text only": (
         "Explain it out loud, in words only. No code whatsoever, not even a "

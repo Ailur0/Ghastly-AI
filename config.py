@@ -97,7 +97,11 @@ CODE_LANGUAGES = [
     "Auto", "Python", "Java", "JavaScript", "TypeScript", "C++", "C#",
     "Go", "Rust", "SQL", "Ruby", "PHP", "Swift", "Kotlin",
 ]
-DEFAULT_CODE_LANGUAGE = os.environ.get("CODE_LANGUAGE", "Auto")
+_CODE_LANGUAGE_ENV = os.environ.get("CODE_LANGUAGE")
+DEFAULT_CODE_LANGUAGE = _CODE_LANGUAGE_ENV or "Auto"
+# Set in .env, this pins the language every launch and outranks whatever
+# was last picked in the setup panel. Unset, the saved choice wins.
+CODE_LANGUAGE_PINNED = bool(_CODE_LANGUAGE_ENV)
 
 # How much of an answer is code vs. spoken explanation.
 #   Balanced        — a sentence of reasoning plus the smallest snippet
@@ -105,7 +109,9 @@ DEFAULT_CODE_LANGUAGE = os.environ.get("CODE_LANGUAGE", "Auto")
 #   Text only       — spoken explanation, no code at all
 #   Full walkthrough— complete code, then approach, then decisions made
 ANSWER_STYLES = ["Balanced", "Snippet only", "Text only", "Full walkthrough"]
-DEFAULT_ANSWER_STYLE = os.environ.get("ANSWER_STYLE", "Balanced")
+_ANSWER_STYLE_ENV = os.environ.get("ANSWER_STYLE")
+DEFAULT_ANSWER_STYLE = _ANSWER_STYLE_ENV or "Balanced"
+ANSWER_STYLE_PINNED = bool(_ANSWER_STYLE_ENV)
 
 # === Context ===
 CONTEXT_FILE = "context/interview-context.md"

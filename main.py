@@ -66,7 +66,7 @@ class GhostInterviewAgent:
             languages=config.CODE_LANGUAGES,
             code_language=config.DEFAULT_CODE_LANGUAGE,
             answer_styles=config.ANSWER_STYLES,
-            answer_style=config.DEFAULT_ANSWER_STYLE,
+            answer_style=config.DEFAULT_ANSWER_STYLE,   # refreshed in initialize()
             on_setup_changed=self.on_setup_changed,
         )
 
@@ -104,9 +104,20 @@ class GhostInterviewAgent:
         logger.info("Loading context...")
         self.context_mgr.load_context()
         self.context_mgr.load_state()
-        self.context_mgr.reset_state()  # fresh interview
-        self.context_mgr.set_code_language(config.DEFAULT_CODE_LANGUAGE)
-        self.context_mgr.set_answer_style(config.DEFAULT_ANSWER_STYLE)
+        self.context_mgr.reset_state()  # fresh interview, keeps preferences
+
+        # The setup panel's choices persist across launches. A value pinned in
+        # .env still wins, and anything unset falls back to the default.
+        if config.CODE_LANGUAGE_PINNED or not self.context_mgr.get_code_language():
+            self.context_mgr.set_code_language(config.DEFAULT_CODE_LANGUAGE)
+        if config.ANSWER_STYLE_PINNED or not self.context_mgr.get_answer_style():
+            self.context_mgr.set_answer_style(config.DEFAULT_ANSWER_STYLE)
+        # The setup panel is built lazily, so seeding these now is enough for
+        # the dropdowns to open on the restored values rather than defaults.
+        self.overlay.code_language = self.context_mgr.get_code_language()
+        self.overlay.answer_style = self.context_mgr.get_answer_style()
+        logger.info(f"Preferences: language={self.context_mgr.get_code_language()}, "
+                    f"style={self.context_mgr.get_answer_style()}")
         logger.info(f"Context loaded: {len(self.context_mgr.static_context)} chars")
         
         # Start overlay window on main thread

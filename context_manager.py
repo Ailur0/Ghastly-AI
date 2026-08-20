@@ -53,6 +53,20 @@ PERSONA_KEYWORDS = {
 
 from pathlib import Path
 
+def resolve_writable_path(path_str: str) -> str:
+    """
+    Where app data that gets written back belongs.
+
+    A frozen build must write beside the .exe: sys._MEIPASS is a temp folder
+    Windows deletes on exit, so state saved there is gone the moment the app
+    closes — which is what used to happen to the language and answer-style
+    choices.
+    """
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        return str(Path(sys.executable).parent / path_str)
+    return path_str
+
+
 def resolve_app_path(path_str: str) -> str:
     """Resolve path relative to executable or base directory for PyInstaller compatibility."""
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
@@ -69,7 +83,9 @@ class ContextManager:
                  state_file="context/interview-state.json",
                  max_context_chars=8000):
         self.context_file = resolve_app_path(context_file)
-        self.state_file = resolve_app_path(state_file)
+        # State is written back, so it cannot live in the read-only bundle.
+        self.state_file = resolve_writable_path(state_file)
+        self.bundled_state_file = resolve_app_path(state_file)
         self.max_context_chars = max_context_chars
         
         # Static context loaded once at startup
@@ -96,7 +112,9 @@ class ContextManager:
     def load_context(self):
         """Load static context from MD file. Call ONCE at startup."""
         try:
-            with open(self.context_file, 'r') as f:
+            # utf-8, not the ANSI default: a resume pasted in here is full
+            # of curly quotes and dashes that cp1252 chokes on.
+            with open(self.context_file, 'r', encoding='utf-8', errors='replace') as f:
                 self.static_context = f.read().strip()
             
             # Trim if too long
@@ -157,15 +175,36 @@ class ContextManager:
         return self.state.get("answer_style", "Balanced")
 
     def load_state(self):
-        """Load state from JSON file. Call at startup."""
-        try:
-            with open(self.state_file, 'r') as f:
-                self.state = json.load(f)
-            logger.info(f"Loaded state: {self.state['question_count']} previous questions")
-        except FileNotFoundError:
-            logger.info("No state file found, starting fresh")
-        except json.JSONDecodeError:
-            logger.warning("State file corrupted, starting fresh")
+        """
+        Load state from JSON. Call at startup.
+
+        Falls back to the copy inside the bundle on first run, so a build that
+        ships a pre-seeded state still picks it up before anything is saved
+        beside the .exe.
+        """
+        for path in (self.state_file, self.bundled_state_file):
+            try:
+                # utf-8-sig tolerates a BOM, which Notepad and PowerShell
+                # both add — this file sits next to the .exe where people
+                # can edit it, and a BOM used to read as corruption.
+                with open(path, 'r', encoding='utf-8-sig') as f:
+                    loaded = json.load(f)
+            except FileNotFoundError:
+                continue
+            except json.JSONDecodeError:
+                logger.warning(f"State file corrupted, ignoring: {path}")
+                continue
+
+            # Merge, so a state file written by an older build keeps the keys
+            # it never knew about instead of dropping them.
+            self.state.update(loaded)
+            logger.info(f"Loaded state from {path}: "
+                        f"{self.state.get('question_count', 0)} previous questions, "
+                        f"language={self.get_code_language()}, "
+                        f"style={self.get_answer_style()}")
+            return
+
+        logger.info("No state file found, starting fresh")
     
     def save_state(self):
         """Persist state to JSON file. Call after each question."""
@@ -173,8 +212,8 @@ class ContextManager:
             parent = os.path.dirname(os.path.abspath(self.state_file))
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            with open(self.state_file, 'w') as f:
-                json.dump(self.state, f, indent=2)
+            with open(self.state_file, 'w', encoding='utf-8') as f:
+                json.dump(self.state, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
     
