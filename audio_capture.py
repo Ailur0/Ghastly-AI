@@ -47,12 +47,21 @@ except (ImportError, OSError):
 
 class AudioCapture:
     def __init__(self, sample_rate=16000, chunk_duration=3, 
-                 silence_threshold=0.01, silence_duration=1.5):
+                 silence_threshold=0.01, silence_duration=1.5,
+                 min_utterance_sec=1.2):
         self.sample_rate = sample_rate
+        # Utterances shorter than this never reach the transcription API:
+        # "mm-hm" and "right" are not questions, and each one would cost a
+        # request out of the daily quota.
+        self.min_utterance_sec = min_utterance_sec
         self.chunk_duration = chunk_duration
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
         
+        # "Auto" lets start() pick; otherwise "sc:<id>" (WASAPI loopback via
+        # soundcard) or "sd:<index>" (PortAudio input via sounddevice).
+        self.device_id = "Auto"
+
         self.audio_queue = queue.Queue()
         self.is_running = False
         self._thread = None
@@ -65,6 +74,38 @@ class AudioCapture:
         self._is_speaking = False
         self._frames_per_chunk = int(sample_rate * 0.1)  # 100ms frames
         
+    def set_device(self, device_id):
+        """Point capture at a device id from list_input_devices(). Takes
+        effect on the next start()."""
+        self.device_id = device_id or "Auto"
+        logger.info(f"Audio device preference: {self.device_id}")
+
+    def list_input_devices(self):
+        """
+        [(device_id, label)] for the setup panel — "Auto" first, then WASAPI
+        loopback devices (what you want: the interviewer's voice out of the
+        speakers), then ordinary inputs.
+        """
+        devices = [("Auto", "Auto — detect")]
+
+        if sys.platform == 'win32' and SOUNDCARD_AVAILABLE:
+            try:
+                for mic in sc.all_microphones(include_loopback=True):
+                    tag = "loopback" if getattr(mic, "isloopback", False) else "input"
+                    devices.append((f"sc:{mic.id}", f"{mic.name}  ({tag})"))
+            except Exception as e:
+                logger.warning(f"Could not list soundcard devices: {e}")
+
+        if SD_AVAILABLE:
+            try:
+                for i, dev in enumerate(sd.query_devices()):
+                    if dev.get('max_input_channels', 0) > 0:
+                        devices.append((f"sd:{i}", f"{dev['name']}  (input)"))
+            except Exception as e:
+                logger.warning(f"Could not list sounddevice devices: {e}")
+
+        return devices
+
     def find_loopback_device(self):
         """Find an input device that supports audio capture (sounddevice)."""
         if not SD_AVAILABLE:
@@ -170,8 +211,12 @@ class AudioCapture:
                 if self._silence_frames >= silence_threshold_frames:
                     if len(self._buffer) > 0:
                         combined = np.concatenate(self._buffer)
-                        if len(combined) > self.sample_rate * 0.5:
+                        if len(combined) >= self.sample_rate * self.min_utterance_sec:
                             self.audio_queue.put(combined)
+                        else:
+                            logger.debug(
+                                f"Skipped {len(combined) / self.sample_rate:.2f}s "
+                                f"utterance (floor {self.min_utterance_sec}s)")
                             logger.info(f"Audio chunk emitted: {len(combined)/self.sample_rate:.1f}s")
                     self._buffer = []
                     self._is_speaking = False
@@ -182,8 +227,11 @@ class AudioCapture:
         """Thread that captures system audio loopback using soundcard (Windows WASAPI)."""
         logger.info("Starting soundcard WASAPI loopback capture...")
         try:
-            spk = sc.default_speaker()
-            mic = sc.get_microphone(id=str(spk.id), include_loopback=True)
+            if str(self.device_id).startswith("sc:"):
+                mic = sc.get_microphone(id=self.device_id[3:], include_loopback=True)
+            else:
+                spk = sc.default_speaker()
+                mic = sc.get_microphone(id=str(spk.id), include_loopback=True)
             logger.info(f"Using soundcard loopback device: {mic.name}")
             
             with mic.recorder(samplerate=self.sample_rate, channels=1) as recorder:
@@ -260,8 +308,12 @@ class AudioCapture:
         """Start capturing audio."""
         self.is_running = True
 
+        # A device picked explicitly decides the backend; "sd:" means the
+        # user chose a PortAudio input, so skip the WASAPI path entirely.
+        wants_sounddevice = str(self.device_id).startswith("sd:")
+
         # Primary backend on Windows: soundcard WASAPI Loopback
-        if sys.platform == 'win32' and SOUNDCARD_AVAILABLE:
+        if sys.platform == 'win32' and SOUNDCARD_AVAILABLE and not wants_sounddevice:
             try:
                 self._thread = threading.Thread(target=self._soundcard_thread, daemon=True)
                 self._thread.start()
@@ -273,7 +325,8 @@ class AudioCapture:
         # sounddevice backend (Linux monitor / Stereo Mix / default microphone)
         if SD_AVAILABLE:
             try:
-                self._device_index = self.find_loopback_device()
+                self._device_index = (int(self.device_id[3:]) if wants_sounddevice
+                                      else self.find_loopback_device())
                 self._stream = sd.InputStream(
                     device=self._device_index,
                     channels=1,

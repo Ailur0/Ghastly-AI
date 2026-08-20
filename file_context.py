@@ -180,12 +180,30 @@ def clear_files() -> int:
     return n
 
 
-def combined_text() -> str:
-    """All uploads concatenated, for ContextManager to append to the context."""
-    chunks = []
+# Documents whose name looks like a resume go into the context first, so a
+# tight character cap eats the notes rather than the candidate's history.
+RESUME_HINTS = ("resume", "cv", "curriculum", "profile")
+
+
+def documents() -> list:
+    """Uploads as (original_name, text), resumes first then oldest-first."""
+    items = []
     for f in sorted(uploads_dir().glob("*.txt"), key=lambda p: p.stat().st_mtime):
         try:
-            chunks.append(f.read_text(encoding="utf-8", errors="replace").strip())
+            body = f.read_text(encoding="utf-8", errors="replace").strip()
         except OSError as e:
             logger.error(f"Could not read upload {f.name}: {e}")
-    return "\n\n".join(c for c in chunks if c)
+            continue
+        if not body:
+            continue
+        first = body.split("\n", 1)[0]
+        name = first[3:].strip() if first.startswith("## ") else f.stem
+        items.append((name, body))
+    # Stable sort keeps upload order within each group.
+    items.sort(key=lambda it: 0 if any(h in it[0].lower() for h in RESUME_HINTS) else 1)
+    return items
+
+
+def combined_text() -> str:
+    """All uploads concatenated, resumes first."""
+    return "\n\n".join(text for _, text in documents())

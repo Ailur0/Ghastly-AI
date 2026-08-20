@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import (
     OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_VISION_MODEL, OLLAMA_BASE_URL,
     OPENROUTER_API_KEY, OPENROUTER_VISION_MODEL, OPENROUTER_BASE_URL,
+    KEEP_HISTORY,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,7 @@ def build_prompt(question: str, context: str, state: dict) -> str:
         state.get("answers_given", [])
     ))
     if qa_history:
-        recent = qa_history[-3:]
+        recent = qa_history[-KEEP_HISTORY:] if KEEP_HISTORY > 0 else []
         recent_qa = "\n\nPrevious Q&A:\n"
         for i, (q, a) in enumerate(recent, 1):
             recent_qa += f"Q{i}: {q}\nA{i}: {a[:200]}...\n"
@@ -220,6 +221,19 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
 
         total_ms = (time.time() - start_time) * 1000
         ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else 0
+
+        # A stream that ends with nothing to show used to leave the panel
+        # blank with no explanation — what happens when a reasoning model
+        # spends the whole budget on thinking tokens, which we discard.
+        if token_count == 0:
+            msg = ("[No answer came back — the model returned only reasoning "
+                   "tokens. Try a shorter answer style or a different model.]")
+            logger.error(f"Empty completion from {payload.get('model')} "
+                         f"(num_predict={payload.get('options', {}).get('num_predict')})")
+            yield msg
+            yield {"_meta": {"total_ms": total_ms, "ttft_ms": 0, "token_count": 0,
+                             "full_text": msg, "error": "empty completion"}}
+            return
 
         logger.info(f"LLM: {token_count} chunks, {total_ms:.0f}ms total, {ttft_ms:.0f}ms TTFT")
 

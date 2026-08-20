@@ -54,7 +54,24 @@ SCREEN_CAPTURE_PROMPT = (
     "approach concisely; otherwise describe and answer what's shown."
 )
 
+# === Hotkeys ===
+# Hides / shows the overlay instantly without quitting it.
+PANIC_HOTKEY = os.environ.get("PANIC_HOTKEY", "ctrl+shift+space")
+
+# === Logging ===
+# A windowed build has nowhere to print, so the log is the only way to see
+# what happened. Lands next to the .exe.
+LOG_FILE = os.environ.get("LOG_FILE", "logs/ghastly.log")
+LOG_MAX_BYTES = 1_000_000
+LOG_BACKUPS = 2
+
 # === Audio Capture ===
+# "Auto" lets the capture layer pick; otherwise a device id from
+# AudioCapture.list_input_devices().
+AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "Auto")
+# Anything shorter than this is a grunt, not a question. Each utterance costs
+# one Groq transcription request, so the floor is money as well as latency.
+MIN_UTTERANCE_SEC = float(os.environ.get("MIN_UTTERANCE_SEC", "1.2"))
 SAMPLE_RATE = 16000  # Whisper expects 16kHz
 CHUNK_DURATION = 3  # seconds per audio chunk
 SILENCE_THRESHOLD = 0.01  # RMS threshold for silence detection

@@ -41,7 +41,7 @@ try:
         QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
         QTextEdit, QFrame, QGraphicsDropShadowEffect, QPushButton,
         QSizePolicy, QDialog, QListWidget, QListWidgetItem, QComboBox,
-        QFileDialog
+        QFileDialog, QLineEdit
     )
     from PyQt5.QtCore import (
         Qt, QTimer, pyqtSignal, QObject, QPoint, QPropertyAnimation,
@@ -104,6 +104,7 @@ if HAS_PYQT:
         update_text = pyqtSignal(str, bool)      # (text, append)
         append_html = pyqtSignal(str)             # html block
         set_status  = pyqtSignal(str)             # status key
+        toggle_vis  = pyqtSignal()                # panic hotkey -> hide/show
 
     class DraggableWidget(QWidget):
         """QWidget that drags its top-level window on mouse press+move."""
@@ -231,10 +232,12 @@ if HAS_PYQT:
             QPushButton:disabled { color:#94A3B8; border-color:rgba(148,163,184,0.4); }
         """
 
-        def __init__(self, languages, current_language, styles, current_style,
-                     on_changed, parent=None):
+        def __init__(self, owner, on_changed, parent=None):
             super().__init__(parent)
+            self.owner = owner                    # the GhostOverlay
             self.on_changed = on_changed          # (kind, value) -> None
+            languages, current_language = owner.languages, owner.code_language
+            styles, current_style = owner.answer_styles, owner.answer_style
             self.setWindowTitle("Ghastly AI — Setup")
             self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint
                                 | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -384,6 +387,28 @@ if HAS_PYQT:
             lay.addWidget(self.style_hint)
             self._describe_style(self.style_combo.currentText())
 
+            # ── audio device ──
+            audio_label = QLabel("AUDIO SOURCE")
+            audio_label.setStyleSheet(self.LABEL_CSS)
+            lay.addWidget(audio_label)
+
+            self.audio_combo = QComboBox()
+            self.audio_combo.setStyleSheet(self.lang_combo.styleSheet())
+            for device_id, device_label in owner.audio_devices:
+                self.audio_combo.addItem(device_label, device_id)
+            index = self.audio_combo.findData(owner.audio_device)
+            if index >= 0:
+                self.audio_combo.setCurrentIndex(index)
+            self.audio_combo.currentIndexChanged.connect(self._audio_changed)
+            lay.addWidget(self.audio_combo)
+
+            audio_hint = QLabel("Pick the loopback device carrying the "
+                                "interviewer's voice. Changing it restarts capture.")
+            audio_hint.setWordWrap(True)
+            audio_hint.setStyleSheet("color:#64748B;font-family:'Segoe UI',sans-serif;"
+                                     "font-size:11px;background:transparent;border:none;")
+            lay.addWidget(audio_hint)
+
             self.refresh_files()
 
         # ── capture exclusion ──
@@ -465,6 +490,11 @@ if HAS_PYQT:
             self.on_changed("style", text)
             self.status.setText(f"Answer style: {text}.")
 
+        def _audio_changed(self, index):
+            device_id = self.audio_combo.itemData(index)
+            self.on_changed("audio_device", device_id)
+            self.status.setText("Audio source: {}".format(self.audio_combo.currentText()))
+
         def _language_changed(self, text):
             self.on_changed("language", text)
             self.status.setText(f"Code answers will use {text}."
@@ -534,6 +564,14 @@ class GhostOverlay:
         # Answer shapes offered in the setup panel, and the one selected now.
         self.answer_styles = kwargs.get("answer_styles", ["Balanced"])
         self.answer_style = kwargs.get("answer_style", "Balanced")
+        # [(device_id, label)] for the setup panel, and the one in use.
+        self.audio_devices = kwargs.get("audio_devices", [("Auto", "Auto — detect")])
+        self.audio_device = kwargs.get("audio_device", "Auto")
+        self.auto_scroll = kwargs.get("auto_scroll", True)
+        # Called with the text of a typed question, and with no arguments to
+        # re-answer the last one.
+        self.on_question_typed = kwargs.get("on_question_typed", None)
+        self.on_retry = kwargs.get("on_retry", None)
         # Called as on_setup_changed(kind, value) with kind "files"|"language".
         self.on_setup_changed = kwargs.get("on_setup_changed", None)
 
@@ -564,6 +602,7 @@ class GhostOverlay:
             self.signals.update_text.connect(self._slot_update_text)
             self.signals.append_html.connect(self._slot_append_html)
             self.signals.set_status.connect(self._slot_set_status)
+            self.signals.toggle_vis.connect(self._slot_toggle_visible)
 
     # ────────────────────────────────────────────────
     #  Window positioning
@@ -713,6 +752,25 @@ class GhostOverlay:
         self.setup_btn.clicked.connect(self._open_setup)
         bar_layout.addWidget(self.setup_btn)
 
+        # Retry button — re-answers the last question
+        self.retry_btn = QPushButton("↻")
+        self.retry_btn.setFixedSize(28, 28)
+        self.retry_btn.setToolTip("Answer the last question again")
+        self.retry_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                border-radius: 6px;
+                color: #0F172A;
+                font-size: 15px;
+                font-weight: 700;
+                padding: 0px;
+            }
+            QPushButton:hover { background: rgba(14, 165, 233, 0.12); }
+        """)
+        self.retry_btn.clicked.connect(self._on_retry_clicked)
+        bar_layout.addWidget(self.retry_btn)
+
         # Title
         self.title_label = QLabel("Ghastly AI")
         self.title_label.setStyleSheet("""
@@ -811,6 +869,32 @@ class GhostOverlay:
             }
         """)
         panel_layout.addWidget(self.text_widget)
+
+        # ── Ask box ──
+        # The whole pipeline depends on the interviewer's audio reaching a
+        # loopback device. When that fails — wrong device, muted call, a term
+        # Whisper mangles — this is the way back in.
+        self.ask_input = QLineEdit()
+        self.ask_input.setPlaceholderText("Type a question and press Enter…")
+        self.ask_input.setFixedHeight(30)
+        self.ask_input.setStyleSheet("""
+            QLineEdit {
+                background: rgba(241, 245, 249, 0.9);
+                border: 1px solid rgba(203, 213, 225, 0.9);
+                border-radius: 8px;
+                padding: 4px 10px;
+                font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
+                font-size: 13px;
+                color: #0F172A;
+                selection-background-color: rgba(14, 165, 233, 0.35);
+            }
+            QLineEdit:focus { border: 1px solid rgba(2, 132, 199, 0.65); }
+        """)
+        # Qt gives a line edit an I-beam; pin it like the answer panel so no
+        # cursor shape ever hints that something is here.
+        self.ask_input.setCursor(QCursor(Qt.ArrowCursor))
+        self.ask_input.returnPressed.connect(self._on_question_submitted)
+        panel_layout.addWidget(self.ask_input)
 
         root.addWidget(self.panel)
 
@@ -942,10 +1026,8 @@ class GhostOverlay:
     def _open_setup(self):
         """Open (or re-focus) the setup panel next to the overlay."""
         if self._setup_dialog is None:
-            self._setup_dialog = SetupDialog(
-                self.languages, self.code_language,
-                self.answer_styles, self.answer_style,
-                self._on_setup_changed, parent=self.window)
+            self._setup_dialog = SetupDialog(self, self._on_setup_changed,
+                                             parent=self.window)
         else:
             self._setup_dialog.refresh_files()
 
@@ -961,11 +1043,52 @@ class GhostOverlay:
             self.code_language = value
         elif kind == "style":
             self.answer_style = value
+        elif kind == "audio_device":
+            self.audio_device = value
         if callable(self.on_setup_changed):
             try:
                 self.on_setup_changed(kind, value)
             except Exception as e:
                 logger.error(f"Setup callback failed: {e}")
+
+    def _on_question_submitted(self):
+        """Enter in the ask box — hand the text to whoever answers questions."""
+        text = self.ask_input.text().strip()
+        if not text:
+            return
+        self.ask_input.clear()
+        if callable(self.on_question_typed):
+            try:
+                self.on_question_typed(text)
+            except Exception as e:
+                logger.error(f"Typed-question callback failed: {e}")
+        else:
+            logger.warning("No handler for typed questions")
+
+    def _on_retry_clicked(self):
+        if callable(self.on_retry):
+            try:
+                self.on_retry()
+            except Exception as e:
+                logger.error(f"Retry callback failed: {e}")
+
+    def toggle_visibility(self):
+        """Hide / show the whole overlay. Thread-safe (panic hotkey)."""
+        if self._is_running and HAS_PYQT and hasattr(self, 'signals'):
+            self.signals.toggle_vis.emit()
+
+    def _slot_toggle_visible(self):
+        if not self.window:
+            return
+        if self.window.isVisible():
+            self.window.hide()
+            if self._setup_dialog:
+                self._setup_dialog.hide()
+            logger.info("Overlay hidden (panic hotkey)")
+        else:
+            self.window.show()
+            self.window.raise_()
+            logger.info("Overlay shown")
 
     def _toggle_opacity(self):
         """Toggle overlay opacity between opaque and translucent (sun/moon icon)."""
@@ -1010,7 +1133,7 @@ class GhostOverlay:
         else:
             self.text_widget.setPlainText(text)
             at_bottom = True
-        if at_bottom:
+        if at_bottom and self.auto_scroll:
             sb.setValue(sb.maximum())
 
     def _slot_append_html(self, html: str):
@@ -1021,7 +1144,7 @@ class GhostOverlay:
         c = self.text_widget.textCursor()
         c.movePosition(QTextCursor.End)
         c.insertHtml(html)
-        if at_bottom:
+        if at_bottom and self.auto_scroll:
             sb.setValue(sb.maximum())
 
     def _slot_set_status(self, key: str):

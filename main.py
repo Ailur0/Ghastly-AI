@@ -25,16 +25,32 @@ from transcribe import transcribe, is_question
 from llm_query import (
     query_ollama_stream, query_ollama_vision_stream, tokens_for_style
 )
-from context_manager import ContextManager
+from context_manager import ContextManager, resolve_writable_path
 from ghost_overlay import GhostOverlay
 import base64
 from screen_capture import ScreenCapture, HotkeyListener
 
-# Setup logging
+# Setup logging — console plus a rotating file. The packaged build runs
+# windowed (console=False), so stderr goes nowhere and the file is the only
+# record of what the app did.
+_log_handlers = [logging.StreamHandler()]
+try:
+    from logging.handlers import RotatingFileHandler
+    from pathlib import Path
+
+    _log_path = Path(resolve_writable_path(config.LOG_FILE))
+    _log_path.parent.mkdir(parents=True, exist_ok=True)
+    _log_handlers.append(RotatingFileHandler(
+        _log_path, maxBytes=config.LOG_MAX_BYTES,
+        backupCount=config.LOG_BACKUPS, encoding="utf-8"))
+except Exception as _log_err:                      # never die over logging
+    print(f"File logging unavailable: {_log_err}")
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(name)s) %(levelname)s] %(message)s',
-    datefmt='%H:%M:%S'
+    datefmt='%H:%M:%S',
+    handlers=_log_handlers
 )
 logger = logging.getLogger("ghost-agent")
 
@@ -46,7 +62,8 @@ class GhostInterviewAgent:
             sample_rate=config.SAMPLE_RATE,
             chunk_duration=config.CHUNK_DURATION,
             silence_threshold=config.SILENCE_THRESHOLD,
-            silence_duration=config.SILENCE_DURATION
+            silence_duration=config.SILENCE_DURATION,
+            min_utterance_sec=config.MIN_UTTERANCE_SEC
         )
         
         self.context_mgr = ContextManager(
@@ -62,11 +79,17 @@ class GhostInterviewAgent:
             position=config.OVERLAY_POSITION,
             opacity_opaque=config.OVERLAY_OPACITY_OPAQUE,
             opacity_translucent=config.OVERLAY_OPACITY_TRANSLUCENT,
-            hotkeys=[("Screen capture", config.SCREEN_CAPTURE_HOTKEY)],
+            hotkeys=[("Screen capture", config.SCREEN_CAPTURE_HOTKEY),
+                     ("Hide / show", config.PANIC_HOTKEY)],
             languages=config.CODE_LANGUAGES,
             code_language=config.DEFAULT_CODE_LANGUAGE,
             answer_styles=config.ANSWER_STYLES,
             answer_style=config.DEFAULT_ANSWER_STYLE,   # refreshed in initialize()
+            audio_devices=self.audio.list_input_devices(),
+            audio_device=config.AUDIO_DEVICE,
+            auto_scroll=config.AUTO_SCROLL,
+            on_question_typed=self.on_question_typed,
+            on_retry=self.on_retry,
             on_setup_changed=self.on_setup_changed,
         )
 
@@ -75,12 +98,42 @@ class GhostInterviewAgent:
             config.SCREEN_CAPTURE_HOTKEY,
             self.on_screen_capture_hotkey
         )
+        self.panic_listener = HotkeyListener(
+            config.PANIC_HOTKEY,
+            self.on_panic_hotkey
+        )
+        # Last question asked, so the retry button has something to re-run.
+        self._last_question = None
         self._screen_capture_lock = threading.Lock()
         self._audio_answering_lock = threading.Lock()
         self._audio_answering_count = 0
 
         self.is_running = False
     
+    def on_question_typed(self, text: str):
+        """A question typed into the overlay — same path as a heard one."""
+        logger.info(f"Typed question: {text[:80]}")
+        threading.Thread(target=self.process_question, args=(text,),
+                         daemon=True).start()
+
+    def on_retry(self):
+        """Answer the last question again."""
+        if not self._last_question:
+            self.overlay.set_status("ready")
+            self.overlay.append_html(
+                '<div style="color:#334155;font-size:12px;padding-left:4px;">'
+                'Nothing to retry yet.</div>')
+            logger.info("Retry pressed with no previous question")
+            return
+        logger.info(f"Retrying: {self._last_question[:80]}")
+        threading.Thread(target=self.process_question,
+                         args=(self._last_question,), daemon=True).start()
+
+    def on_panic_hotkey(self):
+        """Hide or show the overlay without quitting it."""
+        logger.info("Panic hotkey pressed")
+        self.overlay.toggle_visibility()
+
     def on_setup_changed(self, kind: str, value):
         """
         Setup panel callback: documents were added/removed, or the answer
@@ -93,6 +146,22 @@ class GhostInterviewAgent:
             self.context_mgr.set_code_language(value)
         elif kind == "style":
             self.context_mgr.set_answer_style(value)
+        elif kind == "audio_device":
+            self.context_mgr.set_audio_device(value)
+            self.restart_audio(value)
+
+    def restart_audio(self, device_id: str):
+        """Point capture at a new device. The queue survives the swap, so the
+        listening loop keeps running without noticing."""
+        try:
+            self.audio.stop()
+            self.audio.set_device(device_id)
+            self.audio.start()
+            logger.info(f"Audio capture restarted on {device_id}")
+            self.overlay.set_status("listening")
+        except Exception as e:
+            logger.error(f"Could not restart audio on {device_id}: {e}")
+            self.overlay.set_status("error")
 
     def initialize(self):
         """Initialize context, overlay, and verify API connectivity."""
@@ -114,8 +183,15 @@ class GhostInterviewAgent:
             self.context_mgr.set_answer_style(config.DEFAULT_ANSWER_STYLE)
         # The setup panel is built lazily, so seeding these now is enough for
         # the dropdowns to open on the restored values rather than defaults.
+        saved_device = self.context_mgr.get_audio_device()
+        if config.AUDIO_DEVICE != "Auto":
+            saved_device = config.AUDIO_DEVICE          # .env pins it
+            self.context_mgr.set_audio_device(saved_device)
+        self.audio.set_device(saved_device)
+
         self.overlay.code_language = self.context_mgr.get_code_language()
         self.overlay.answer_style = self.context_mgr.get_answer_style()
+        self.overlay.audio_device = saved_device
         logger.info(f"Preferences: language={self.context_mgr.get_code_language()}, "
                     f"style={self.context_mgr.get_answer_style()}")
         logger.info(f"Context loaded: {len(self.context_mgr.static_context)} chars")
@@ -131,6 +207,13 @@ class GhostInterviewAgent:
         self.audio.list_devices()
 
         # Register screen capture hotkey
+        logger.info("Registering panic hotkey...")
+        if self.panic_listener.start():
+            logger.info(f"Panic hotkey registered: {config.PANIC_HOTKEY}")
+        else:
+            logger.warning(f"Panic hotkey registration failed — "
+                           f"'{config.PANIC_HOTKEY}' may be taken")
+
         logger.info("Registering screen capture hotkey...")
         if self.hotkey_listener.start():
             logger.info(f"Screen capture hotkey registered: {config.SCREEN_CAPTURE_HOTKEY}")
@@ -161,6 +244,7 @@ class GhostInterviewAgent:
         Target: <2s total after question is complete.
         """
         start_time = time.time()
+        self._last_question = question_text
 
         with self._audio_answering_lock:
             self._audio_answering_count += 1
@@ -374,6 +458,7 @@ class GhostInterviewAgent:
         
         self.audio.stop()
         self.hotkey_listener.stop()
+        self.panic_listener.stop()
         self.overlay.stop()
 
         logger.info("Ghastly AI stopped")

@@ -106,7 +106,9 @@ class ContextManager:
             "code_language": "Auto",
             # Shape of the answer: Balanced / Snippet only / Text only /
             # Full walkthrough.
-            "answer_style": "Balanced"
+            "answer_style": "Balanced",
+            # Capture device id, or "Auto" to let the capture layer pick.
+            "audio_device": "Auto"
         }
     
     def load_context(self):
@@ -133,22 +135,52 @@ class ContextManager:
             self.static_context = "No context available."
     
     def _append_uploads(self):
-        """Fold uploaded resumes/notes into the static context."""
+        """
+        Fold uploaded documents into the static context, resumes first.
+
+        Packs one document at a time so a tight cap leaves out the least
+        important file whole, rather than slicing the tail off whichever one
+        happened to be last — which used to cut a resume in half mid-sentence.
+        """
         try:
-            uploaded = file_context.combined_text()
+            docs = file_context.documents()
         except Exception as e:
             logger.error(f"Could not read uploads: {e}")
             return
-        if not uploaded:
+        if not docs:
             return
 
-        block = "Candidate documents:\n" + uploaded
-        self.static_context = (self.static_context + "\n\n" + block
-                               if self.static_context else block)
+        header, gap = "Candidate documents:\n", "\n\n"
+        base = self.static_context
+        budget = self.max_context_chars - len(header) - (len(base) + len(gap) if base else 0)
+        if budget <= 0:
+            logger.warning("Context cap leaves no room for uploaded documents")
+            return
 
-        if len(self.static_context) > self.max_context_chars:
-            self.static_context = self.static_context[:self.max_context_chars]
-            logger.warning(f"Context truncated to {self.max_context_chars} chars")
+        kept, dropped = [], []
+        for name, text in docs:
+            need = len(text) + (len(gap) if kept else 0)
+            if need <= budget:
+                kept.append(text)
+                budget -= need
+            elif not kept and budget > 500:
+                # Nothing fits whole and this is the most important document,
+                # so take as much of its head as there is room for.
+                kept.append(text[:budget - 20] + "\n[...truncated]")
+                dropped.append(f"{name} (truncated)")
+                budget = 0
+            else:
+                dropped.append(name)
+
+        if not kept:
+            return
+
+        block = header + gap.join(kept)
+        self.static_context = base + gap + block if base else block
+
+        if dropped:
+            logger.warning(f"Context cap {self.max_context_chars} chars — "
+                           f"left out: {', '.join(dropped)}")
         logger.info(f"Context with uploads: {len(self.static_context)} chars")
 
     def reload_context(self):
@@ -173,6 +205,15 @@ class ContextManager:
 
     def get_answer_style(self) -> str:
         return self.state.get("answer_style", "Balanced")
+
+    def set_audio_device(self, device_id: str):
+        """Remember which capture device the user picked."""
+        self.state["audio_device"] = device_id or "Auto"
+        self.save_state()
+        logger.info(f"Audio device set to {self.state['audio_device']}")
+
+    def get_audio_device(self) -> str:
+        return self.state.get("audio_device", "Auto")
 
     def load_state(self):
         """
@@ -314,6 +355,7 @@ class ContextManager:
         """Reset state for a new interview session, keeping preferences."""
         language = self.state.get("code_language", "Auto")
         style = self.state.get("answer_style", "Balanced")
+        device = self.state.get("audio_device", "Auto")
         self.state = {
             "questions_asked": [],
             "answers_given": [],
@@ -324,7 +366,8 @@ class ContextManager:
             "session_start": time.time(),
             "last_question_time": None,
             "code_language": language,
-            "answer_style": style
+            "answer_style": style,
+            "audio_device": device
         }
         self.save_state()
         logger.info(f"State reset for new interview "
