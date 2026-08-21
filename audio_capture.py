@@ -213,11 +213,12 @@ class AudioCapture:
                         combined = np.concatenate(self._buffer)
                         if len(combined) >= self.sample_rate * self.min_utterance_sec:
                             self.audio_queue.put(combined)
+                            logger.info(f"Audio chunk emitted: "
+                                        f"{len(combined)/self.sample_rate:.1f}s")
                         else:
                             logger.debug(
                                 f"Skipped {len(combined) / self.sample_rate:.2f}s "
                                 f"utterance (floor {self.min_utterance_sec}s)")
-                            logger.info(f"Audio chunk emitted: {len(combined)/self.sample_rate:.1f}s")
                     self._buffer = []
                     self._is_speaking = False
                     self._silence_frames = 0
