@@ -185,6 +185,11 @@ class GhostInterviewAgent:
         logger.info("=" * 50)
         logger.info("Ghastly AI — Initializing")
         logger.info("=" * 50)
+        # Say where data actually went. The chosen folder is resolved before
+        # logging exists, so without this line a support question ("where are
+        # my uploads?") has no answer anywhere.
+        import file_context
+        logger.info(f"App data folder: {file_context.writable_base()}")
         
         # Load context
         logger.info("Loading context...")
