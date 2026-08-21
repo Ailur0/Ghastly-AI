@@ -72,6 +72,46 @@ def exclude_from_capture(widget) -> bool:
         return False
 
 
+def exclude_process_windows() -> int:
+    """
+    Exclude every top-level window this process owns, Qt's or not.
+
+    Windows puts its own drop-shadow window (class SysShadow) behind tooltips
+    and menus. It belongs to us but is never created through Qt, so no event
+    filter can see it — leaving a shadow-shaped box visible in a screen share
+    exactly where the tooltip was, with the text correctly hidden inside it.
+
+    Returns how many windows this call had to fix.
+    """
+    if not IS_WINDOWS:
+        return 0
+
+    u32 = ctypes.windll.user32
+    pid_here = ctypes.windll.kernel32.GetCurrentProcessId()
+    fixed = 0
+
+    def visit(hwnd, _):
+        nonlocal fixed
+        pid = ctypes.c_ulong()
+        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value != pid_here or not u32.IsWindowVisible(hwnd):
+            return True
+        affinity = ctypes.c_ulong()
+        if (u32.GetWindowDisplayAffinity(hwnd, ctypes.byref(affinity))
+                and affinity.value != WDA_EXCLUDEFROMCAPTURE):
+            if u32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE):
+                fixed += 1
+        return True
+
+    try:
+        callback = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
+                                      ctypes.c_void_p)(visit)
+        u32.EnumWindows(callback, 0)
+    except Exception as e:
+        logger.error(f"Window sweep failed: {e}")
+    return fixed
+
+
 if HAS_PYQT:
     class CaptureShield(QObject):
         """
@@ -82,11 +122,18 @@ if HAS_PYQT:
         in a screen share while the overlay itself stayed invisible. Hovering a
         button was enough to leak its description. Filtering Show events
         catches them all, including any Qt creates internally later.
+
+        Qt windows are handled the moment they appear; the sweep afterwards
+        picks up the shadow windows Windows creates for them a beat later.
         """
+
+        SWEEP_DELAYS_MS = (0, 40, 120)
 
         def eventFilter(self, obj, event):
             if event.type() == QEvent.Show and isinstance(obj, QWidget) and obj.isWindow():
                 exclude_from_capture(obj)
+                for delay in self.SWEEP_DELAYS_MS:
+                    QTimer.singleShot(delay, exclude_process_windows)
             return False
 
 
@@ -608,6 +655,7 @@ class GhostOverlay:
         self._expanded_h = None
         self._setup_dialog = None
         self._capture_shield = None
+        self._sweep_timer = None
 
         self._is_running = False
         self._expanded = True
@@ -673,6 +721,12 @@ class GhostOverlay:
         # Catch every window the app opens — tooltips and dropdowns included.
         self._capture_shield = CaptureShield()
         self.app.installEventFilter(self._capture_shield)
+
+        # Backstop: anything the event filter and its sweeps still miss gets
+        # picked up within half a second. Cheap — EnumWindows over one process.
+        self._sweep_timer = QTimer()
+        self._sweep_timer.timeout.connect(exclude_process_windows)
+        self._sweep_timer.start(500)
 
         total_w = max(self.BAR_W, self.PANEL_W) + 24
         total_h = self.BAR_H + self.PANEL_H + 32
