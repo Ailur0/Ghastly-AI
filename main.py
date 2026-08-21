@@ -55,6 +55,23 @@ logging.basicConfig(
 logger = logging.getLogger("ghost-agent")
 
 
+def _log_unhandled(exc_type, exc, tb):
+    """
+    Last-resort handler so a crash leaves a trace.
+
+    PyQt aborts the process when an exception escapes a slot, and the windowed
+    build has no console — without this the app just vanishes and the log ends
+    mid-sentence.
+    """
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc, tb)
+        return
+    logger.critical("Unhandled exception", exc_info=(exc_type, exc, tb))
+
+
+sys.excepthook = _log_unhandled
+
+
 class GhostInterviewAgent:
     def __init__(self):
         # Initialize components

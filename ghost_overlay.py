@@ -413,7 +413,12 @@ if HAS_PYQT:
         # ── file handling ──
         def refresh_files(self):
             self.file_list.clear()
-            entries = file_context.list_files()
+            try:
+                entries = file_context.list_files()
+            except Exception as e:
+                logger.exception("Could not list uploaded documents")
+                entries = []
+                self.status.setText(f"Documents folder unreadable: {e}")
             for stored, original, chars in entries:
                 item = QListWidgetItem(f"{original}  ·  {chars:,} chars")
                 item.setData(Qt.UserRole, stored)
@@ -426,6 +431,13 @@ if HAS_PYQT:
             self.clear_btn.setEnabled(bool(entries))
 
         def _pick_files(self):
+            try:
+                self._pick_files_inner()
+            except Exception as e:
+                logger.exception("File picker failed")
+                self.status.setText(f"Could not add files: {e}")
+
+        def _pick_files_inner(self):
             dlg = QFileDialog(self, "Add resume or notes")
             dlg.setFileMode(QFileDialog.ExistingFiles)
             # Qt's own dialog, not the native one — see the class docstring.
@@ -453,6 +465,13 @@ if HAS_PYQT:
             self.status.setText(msg)
 
         def _remove_selected(self):
+            try:
+                self._remove_selected_inner()
+            except Exception as e:
+                logger.exception("Remove failed")
+                self.status.setText(f"Could not remove: {e}")
+
+        def _remove_selected_inner(self):
             item = self.file_list.currentItem()
             stored = item.data(Qt.UserRole) if item else None
             if not stored:
@@ -464,7 +483,12 @@ if HAS_PYQT:
             self.status.setText("Removed.")
 
         def _clear_all(self):
-            n = file_context.clear_files()
+            try:
+                n = file_context.clear_files()
+            except Exception as e:
+                logger.exception("Clear failed")
+                self.status.setText(f"Could not clear: {e}")
+                return
             self.refresh_files()
             self.on_changed("files", 0)
             self.status.setText(f"Cleared {n} document{'s' if n != 1 else ''}.")
@@ -1018,7 +1042,23 @@ class GhostOverlay:
         logger.info(f"Panel {'expanded' if self._expanded else 'collapsed'}")
 
     def _open_setup(self):
-        """Open (or re-focus) the setup panel next to the overlay."""
+        """
+        Open (or re-focus) the setup panel next to the overlay.
+
+        Everything here is guarded: an exception raised inside a Qt slot
+        aborts the whole process, so a folder the app cannot read must end as
+        a message in the panel, not a vanished app.
+        """
+        try:
+            self._build_and_show_setup()
+        except Exception as e:
+            logger.exception("Could not open the setup panel")
+            self._setup_dialog = None
+            self.append_html(
+                '<div style="color:#DC2626;font-size:12px;padding-left:4px;">'
+                f'Setup panel unavailable: {e}</div>')
+
+    def _build_and_show_setup(self):
         if self._setup_dialog is None:
             self._setup_dialog = SetupDialog(self, self._on_setup_changed,
                                              parent=self.window)

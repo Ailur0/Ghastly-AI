@@ -14,8 +14,10 @@ PyInstaller temp bundle — that directory is deleted when the app exits.
 """
 
 import logging
+import os
 import re
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -35,19 +37,66 @@ TEXT_SUFFIXES = {
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | {".pdf", ".docx"}
 
 
-def uploads_dir() -> Path:
-    """
-    Writable folder for uploaded documents.
+_writable_base = None
 
-    Frozen builds put it beside the .exe; sys._MEIPASS is a temp directory
-    that disappears on exit, so anything written there would be lost.
-    """
+
+def _candidate_bases():
+    """Where app data could live, best first."""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        base = Path(sys.executable).parent
+        # Beside the .exe — sys._MEIPASS is a temp dir wiped on exit.
+        yield Path(sys.executable).parent
     else:
-        base = Path(__file__).parent
-    d = base / "context" / "uploaded"
-    d.mkdir(parents=True, exist_ok=True)
+        yield Path(__file__).parent
+
+    # The .exe may sit somewhere unwritable: Program Files, a read-only
+    # drive, or a folder Defender's controlled-folder-access is guarding.
+    local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if local:
+        yield Path(local) / "GhastlyAI"
+    yield Path(tempfile.gettempdir()) / "GhastlyAI"
+
+
+def writable_base() -> Path:
+    """
+    A directory the app can actually write to, resolved once.
+
+    Falls back rather than failing: a user who runs the .exe from a place it
+    cannot write to should still get a working app, not a crash.
+    """
+    global _writable_base
+    if _writable_base is not None:
+        return _writable_base
+
+    problems = []
+    for base in _candidate_bases():
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            probe = base / ".write-probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+        except Exception as e:
+            problems.append(f"{base}: {e}")
+            continue
+        if problems:
+            logger.warning(f"Falling back to {base} for app data ("
+                           f"{'; '.join(problems)})")
+        _writable_base = base
+        return base
+
+    # Nothing was writable. Hand back the last candidate; every caller below
+    # tolerates the operations failing.
+    logger.error(f"No writable location found ({'; '.join(problems)})")
+    _writable_base = Path(tempfile.gettempdir()) / "GhastlyAI"
+    return _writable_base
+
+
+def uploads_dir() -> Path:
+    """Writable folder for uploaded documents."""
+    d = writable_base() / "context" / "uploaded"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.error(f"Could not create {d}: {e}")
     return d
 
 
@@ -141,10 +190,20 @@ def add_file(path) -> str:
     return dest.name
 
 
+def _stored_files() -> list:
+    """Upload files, oldest first. Never raises — an unreadable folder is
+    reported as empty so the setup panel can still open."""
+    try:
+        return sorted(uploads_dir().glob("*.txt"), key=lambda p: p.stat().st_mtime)
+    except Exception as e:
+        logger.error(f"Uploads folder unreadable: {e}")
+        return []
+
+
 def list_files() -> list:
     """Stored uploads as (stored_name, original_name, char_count), oldest first."""
     out = []
-    for f in sorted(uploads_dir().glob("*.txt"), key=lambda p: p.stat().st_mtime):
+    for f in _stored_files():
         try:
             body = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -168,7 +227,7 @@ def remove_file(stored_name: str) -> bool:
 
 def clear_files() -> int:
     n = 0
-    for f in uploads_dir().glob("*.txt"):
+    for f in _stored_files():
         try:
             f.unlink()
             n += 1
@@ -186,7 +245,7 @@ RESUME_HINTS = ("resume", "cv", "curriculum", "profile")
 def documents() -> list:
     """Uploads as (original_name, text), resumes first then oldest-first."""
     items = []
-    for f in sorted(uploads_dir().glob("*.txt"), key=lambda p: p.stat().st_mtime):
+    for f in _stored_files():
         try:
             body = f.read_text(encoding="utf-8", errors="replace").strip()
         except OSError as e:

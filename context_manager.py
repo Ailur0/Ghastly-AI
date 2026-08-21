@@ -62,7 +62,9 @@ def resolve_writable_path(path_str: str) -> str:
     choices.
     """
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        return str(Path(sys.executable).parent / path_str)
+        # Shares file_context's fallback chain, so state, uploads and logs
+        # all land together wherever writing actually works.
+        return str(file_context.writable_base() / path_str)
     return path_str
 
 
