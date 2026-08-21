@@ -90,7 +90,8 @@ class GhostInterviewAgent:
             chunk_duration=config.CHUNK_DURATION,
             silence_threshold=config.SILENCE_THRESHOLD,
             silence_duration=config.SILENCE_DURATION,
-            min_utterance_sec=config.MIN_UTTERANCE_SEC
+            min_utterance_sec=config.MIN_UTTERANCE_SEC,
+            ring_seconds=config.AUDIO_RING_SEC
         )
         
         self.context_mgr = ContextManager(
@@ -107,7 +108,8 @@ class GhostInterviewAgent:
             opacity_opaque=config.OVERLAY_OPACITY_OPAQUE,
             opacity_translucent=config.OVERLAY_OPACITY_TRANSLUCENT,
             window_title=config.WINDOW_TITLE,
-            hotkeys=[("Screen capture", config.SCREEN_CAPTURE_HOTKEY),
+            hotkeys=[("Answer what was just said", config.GRAB_HOTKEY),
+                     ("Screen capture", config.SCREEN_CAPTURE_HOTKEY),
                      ("Hide / show", config.PANIC_HOTKEY),
                      ("Opaque / translucent", config.OPACITY_HOTKEY),
                      ("Answer last question", config.RETRY_HOTKEY)],
@@ -141,16 +143,70 @@ class GhostInterviewAgent:
             config.RETRY_HOTKEY,
             self.on_retry
         )
+        self.grab_listener = HotkeyListener(
+            config.GRAB_HOTKEY,
+            self.on_grab_hotkey
+        )
         # Last question asked, so the retry button has something to re-run.
         self._last_question = None
-        # One answer streams at a time. Two questions in quick succession
-        # would otherwise interleave their tokens in the same panel.
-        self._answer_lock = threading.Lock()
-        self._screen_capture_lock = threading.Lock()
-        self._audio_answering_lock = threading.Lock()
-        self._audio_answering_count = 0
+
+        # One answer owns the panel at a time, and the newest question wins.
+        # Each answer carries a ticket; the moment a newer one is claimed the
+        # older ticket goes stale and every write it attempts is dropped, so
+        # a slow answer can never land under a question it does not belong
+        # to. Waiting on a lock instead used to stall the new question behind
+        # the old one for as long as the model took.
+        self._answer_state_lock = threading.Lock()
+        self._answer_seq = 0
+        self._answer_active = False
+        self._grab_lock = threading.Lock()
 
         self.is_running = False
+
+    # === Answer ownership ===
+
+    def _claim_answer(self, supersede: bool = True):
+        """
+        Take ownership of the answer panel and return a ticket, or None if
+        `supersede` is False and something is already streaming.
+
+        Superseding does not stop the old thread — it only makes it stale.
+        The old thread notices on its next token, stops reading, and lets go.
+        """
+        with self._answer_state_lock:
+            if self._answer_active and not supersede:
+                return None
+            was_active = self._answer_active
+            self._answer_seq += 1
+            self._answer_active = True
+            ticket = self._answer_seq
+        if was_active:
+            logger.info(f"Answer #{ticket} supersedes the one still streaming")
+        return ticket
+
+    def _release_answer(self, ticket) -> None:
+        """Give the panel back, unless a newer answer already took it."""
+        with self._answer_state_lock:
+            if ticket == self._answer_seq:
+                self._answer_active = False
+
+    def _is_current(self, ticket) -> bool:
+        with self._answer_state_lock:
+            return ticket == self._answer_seq
+
+    def _emit(self, ticket, method, *args) -> bool:
+        """
+        Write to the overlay only while this answer is still the current one.
+
+        The check and the write happen under the same lock so a token from a
+        superseded answer cannot slip through in between. Overlay methods
+        only emit Qt signals, so nothing blocks here.
+        """
+        with self._answer_state_lock:
+            if ticket != self._answer_seq:
+                return False
+            method(*args)
+            return True
     
     def on_question_typed(self, text: str):
         """A question typed into the overlay — same path as a heard one."""
@@ -303,6 +359,7 @@ class GhostInterviewAgent:
             ("Panic", self.panic_listener, config.PANIC_HOTKEY),
             ("Opacity", self.opacity_listener, config.OPACITY_HOTKEY),
             ("Retry", self.retry_listener, config.RETRY_HOTKEY),
+            ("Grab", self.grab_listener, config.GRAB_HOTKEY),
         ):
             logger.info(f"Registering {label.lower()} hotkey...")
             if listener.start():
@@ -343,19 +400,12 @@ class GhostInterviewAgent:
         start_time = time.time()
         self._last_question = question_text
 
-        # Wait for any answer in flight rather than writing over it.
-        if not self._answer_lock.acquire(timeout=90):
-            logger.warning("Gave up waiting for the previous answer to finish")
-            return
+        # The newest question always wins the panel.
+        ticket = self._claim_answer()
 
-        with self._audio_answering_lock:
-            self._audio_answering_count += 1
         try:
-            # Update status → Answering
-            self.overlay.set_status("answering")
-
-            # Show question on overlay immediately
-            self.overlay.show_question(question_text)
+            self._emit(ticket, self.overlay.set_status, "answering")
+            self._emit(ticket, self.overlay.show_question, question_text)
 
             # Get context and state
             context = self.context_mgr.get_context_string()
@@ -364,92 +414,148 @@ class GhostInterviewAgent:
             # Stream answer from LLM
             full_answer = ""
             meta = None
+            superseded = False
 
+            stream = query_ollama_stream(
+                question=question_text,
+                context=context,
+                state=state,
+                api_key=config.OLLAMA_API_KEY,
+                model=config.OLLAMA_MODEL,
+                base_url=config.OLLAMA_BASE_URL,
+                max_tokens=tokens_for_style(
+                    self.context_mgr.get_answer_style(),
+                    config.MAX_ANSWER_CHARS // 4)
+            )
             try:
-                for chunk in query_ollama_stream(
-                    question=question_text,
-                    context=context,
-                    state=state,
-                    api_key=config.OLLAMA_API_KEY,
-                    model=config.OLLAMA_MODEL,
-                    base_url=config.OLLAMA_BASE_URL,
-                    max_tokens=tokens_for_style(
-                        self.context_mgr.get_answer_style(),
-                        config.MAX_ANSWER_CHARS // 4)
-                ):
+                for chunk in stream:
                     if isinstance(chunk, dict) and "_meta" in chunk:
                         meta = chunk["_meta"]
                     else:
                         full_answer += chunk
-                        self.overlay.stream_answer(chunk)
+                        # A write that gets refused means a newer question
+                        # owns the panel now; stop reading this one.
+                        if not self._emit(ticket, self.overlay.stream_answer, chunk):
+                            superseded = True
+                            break
+
+                if superseded:
+                    logger.info(f"Dropped a superseded answer after "
+                                f"{len(full_answer)} chars")
+                    return
 
                 # Show latency if enabled
                 if config.SHOW_LATENCY and meta:
                     total_ms = (time.time() - start_time) * 1000
                     ttft = meta.get("ttft_ms", 0)
-                    self.overlay.show_latency(total_ms, ttft)
+                    self._emit(ticket, self.overlay.show_latency, total_ms, ttft)
 
                     logger.info(f"Q: '{question_text[:60]}...'")
                     logger.info(f"A: '{full_answer[:60]}...'")
                     logger.info(f"Total: {total_ms:.0f}ms | TTFT: {ttft:.0f}ms | "
-                                  f"Tokens: {meta.get('token_count', 0)}")
+                                f"Tokens: {meta.get('token_count', 0)}")
 
                 # Save to state
                 self.context_mgr.add_qa(question_text, full_answer)
 
             except Exception as e:
                 logger.error(f"Failed to process question: {e}")
-                self.overlay.stream_answer(f"\n[Error: {e}]")
-                self.overlay.set_status("error")
+                self._emit(ticket, self.overlay.stream_answer, f"\n[Error: {e}]")
+                self._emit(ticket, self.overlay.set_status, "error")
                 return
+            finally:
+                # Abandoned mid-stream when superseded — closing it returns
+                # the connection instead of leaving it to the collector.
+                stream.close()
 
             # Back to listening
-            self.overlay.set_status("listening")
+            self._emit(ticket, self.overlay.set_status, "listening")
         finally:
-            self._answer_lock.release()
-            with self._audio_answering_lock:
-                self._audio_answering_count -= 1
+            self._release_answer(ticket)
 
     def on_screen_capture_hotkey(self):
         """
         Callback for the screen-capture hotkey. Runs on the `keyboard`
         library's internal hook thread — must return immediately.
         """
-        with self._audio_answering_lock:
-            audio_busy = self._audio_answering_count > 0
-        if audio_busy:
-            logger.debug("Audio answer in progress, ignoring screen capture hotkey press")
-            return
-
-        if not self._screen_capture_lock.acquire(blocking=False):
-            logger.debug("Screen capture already in progress, ignoring hotkey press")
-            return
-
         proc_thread = threading.Thread(
             target=self._process_screen_capture,
             daemon=True
         )
         proc_thread.start()
 
+    def on_grab_hotkey(self):
+        """
+        Callback for the grab hotkey. Runs on the `keyboard` library's
+        internal hook thread — must return immediately.
+        """
+        if not self._grab_lock.acquire(blocking=False):
+            logger.debug("Grab already in progress, ignoring hotkey press")
+            return
+        threading.Thread(target=self._process_grab, daemon=True).start()
+
+    def _process_grab(self):
+        """
+        Transcribe the last GRAB_SECONDS of audio and answer it.
+
+        This is the deliberate path: it takes the window as heard rather than
+        as VAD carved it, and it skips is_question() entirely. Pressing the
+        key is the intent signal, so a question the filter would have thrown
+        away — or one chopped in half by a pause — still gets answered.
+        """
+        try:
+            audio = self.audio.grab_recent(config.GRAB_SECONDS)
+            if audio is None:
+                self.notify("Nothing buffered yet — is the audio source right?")
+                return
+
+            secs = len(audio) / config.SAMPLE_RATE
+            logger.info(f"Grab hotkey: transcribing the last {secs:.1f}s")
+            self.overlay.set_status("transcribing")
+
+            result = transcribe(audio, sample_rate=config.SAMPLE_RATE)
+            text = result["text"].strip()
+            if not text or len(text) < 3:
+                logger.info("Grab found no speech in the window")
+                self.overlay.set_status("listening")
+                self.notify(f"Nothing was said in the last {secs:.0f} seconds.")
+                return
+
+            logger.info(f"Grab transcribed ({result.get('latency_ms', 0):.0f}ms): "
+                        f"'{text[:80]}'")
+        except Exception as e:
+            logger.error(f"Grab failed: {e}")
+            self.overlay.set_status("error")
+            self.notify(f"Could not answer what was just said: {e}")
+            return
+        finally:
+            # Released before the answer starts, not after: pressing again
+            # mid-answer is how you supersede one, so it must not be
+            # swallowed as "a grab is already running".
+            self._grab_lock.release()
+
+        self.process_question(text)
+
     def _process_screen_capture(self):
         """Capture the screen, query the vision LLM, stream to overlay."""
         start_time = time.time()
-        # Same lock as spoken answers, so a capture cannot interleave with
-        # one. Non-blocking: a hotkey press during an answer is dropped
-        # rather than queued, which is what pressing it again is for.
-        if not self._answer_lock.acquire(blocking=False):
+        # Unlike a spoken question, a capture does not supersede: a press
+        # while an answer is streaming is dropped rather than queued, which
+        # is what pressing it again afterwards is for.
+        ticket = self._claim_answer(supersede=False)
+        if ticket is None:
             logger.info("Answer in progress, ignoring the screen capture")
-            self._screen_capture_lock.release()
             return
         try:
-            self.overlay.set_status("answering")
-            self.overlay.show_question("[Screen capture]")
+            self._emit(ticket, self.overlay.set_status, "answering")
+            self._emit(ticket, self.overlay.show_question, "[Screen capture]")
 
             try:
                 png_bytes = self.screen_capture.capture_primary_monitor()
             except Exception as e:
                 logger.error(f"Screen capture failed: {e}")
-                self.overlay.stream_answer("[Error: screen capture failed]")
+                self._emit(ticket, self.overlay.stream_answer,
+                           "[Error: screen capture failed]")
                 return
 
             image_b64 = base64.b64encode(png_bytes).decode("utf-8")
@@ -459,8 +565,9 @@ class GhostInterviewAgent:
 
             full_answer = ""
             meta = None
+            superseded = False
 
-            for chunk in query_ollama_vision_stream(
+            stream = query_ollama_vision_stream(
                 image_b64=image_b64,
                 prompt=config.SCREEN_CAPTURE_PROMPT,
                 context=context,
@@ -471,28 +578,39 @@ class GhostInterviewAgent:
                 max_tokens=tokens_for_style(
                     self.context_mgr.get_answer_style(),
                     config.MAX_ANSWER_CHARS // 4)
-            ):
-                if isinstance(chunk, dict) and "_meta" in chunk:
-                    meta = chunk["_meta"]
-                else:
-                    full_answer += chunk
-                    self.overlay.stream_answer(chunk)
+            )
+            try:
+                for chunk in stream:
+                    if isinstance(chunk, dict) and "_meta" in chunk:
+                        meta = chunk["_meta"]
+                    else:
+                        full_answer += chunk
+                        # A spoken question asked during the 7-15s a vision
+                        # model takes supersedes this, and it matters more.
+                        if not self._emit(ticket, self.overlay.stream_answer, chunk):
+                            superseded = True
+                            break
+            finally:
+                stream.close()
+
+            if superseded:
+                logger.info("Dropped a superseded screen capture answer")
+                return
 
             if config.SHOW_LATENCY and meta:
                 total_ms = (time.time() - start_time) * 1000
                 ttft = meta.get("ttft_ms", 0)
-                self.overlay.show_latency(total_ms, ttft)
+                self._emit(ticket, self.overlay.show_latency, total_ms, ttft)
 
             if not (meta and meta.get("error")):
                 self.context_mgr.add_qa("[Screen capture]", full_answer)
 
         except Exception as e:
             logger.error(f"Screen capture query failed: {e}")
-            self.overlay.stream_answer(f"\n[Error: {e}]")
+            self._emit(ticket, self.overlay.stream_answer, f"\n[Error: {e}]")
         finally:
-            self._answer_lock.release()
-            self._screen_capture_lock.release()
-            self.overlay.set_status("listening")
+            self._emit(ticket, self.overlay.set_status, "listening")
+            self._release_answer(ticket)
 
     def run(self):
         """Main loop: audio processing in background thread, Qt event loop on main thread."""
@@ -572,6 +690,7 @@ class GhostInterviewAgent:
         
         self.audio.stop()
         self.hotkey_listener.stop()
+        self.grab_listener.stop()
         self.panic_listener.stop()
         self.opacity_listener.stop()
         self.retry_listener.stop()

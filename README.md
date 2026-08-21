@@ -7,15 +7,20 @@ Real-time interview assistant with an invisible screen overlay.
 ## How it works
 
 ```
-System Audio → VAD (silence detection) → Whisper STT → Question Filter → Context+State → Ollama LLM (streaming) → Ghost Overlay
-                                                                                                                    ↓
-                                                                                                         WDA_EXCLUDEFROMCAPTURE
-                                                                                                         (invisible to capture)
+System Audio ─┬→ VAD (silence detection) → Whisper STT → Question Filter ─┐
+              │                                                          │
+              └→ 45s rolling buffer → grab hotkey → Whisper STT ─────────┤ (no filter)
+                                                                         │
+                          Context+State → Ollama LLM (streaming) → Ghost Overlay
+                                                                         ↓
+                                                            WDA_EXCLUDEFROMCAPTURE
+                                                            (invisible to capture)
 ```
 
-You can also type a question into the overlay, or press the screen-capture
-hotkey to send what's on screen to a vision model — both land in the same
-answer panel.
+You can also type a question into the overlay, press the screen-capture
+hotkey to send what's on screen to a vision model, or press the grab hotkey
+to answer whatever was just said — all of them land in the same answer panel,
+and the newest question always wins it.
 
 ## Quick Start
 
@@ -48,6 +53,8 @@ cp .env.example .env
 | `PANIC_HOTKEY` | Hide / show the overlay without quitting (default: `ctrl+shift+space`) |
 | `OPACITY_HOTKEY` | Toggle opaque / translucent (default: `ctrl+shift+o`) |
 | `RETRY_HOTKEY` | Answer the last question again (default: `ctrl+shift+r`) |
+| `GRAB_HOTKEY` | Answer what was just said (default: `ctrl+;`) |
+| `GRAB_SECONDS` | How far back that hotkey reaches (default: `20`) |
 | `CODE_LANGUAGE` | Pins the answer language, overriding the setup panel (e.g. `Java`) |
 | `ANSWER_STYLE` | Pins the answer style (`Balanced`, `Snippet only`, `Text only`, `Full walkthrough`) |
 | `AUDIO_DEVICE` | Pins the capture device; otherwise picked in the setup panel |
@@ -94,6 +101,33 @@ the interviewer asks a question, the answer appears in the panel.
 The mouse cursor never changes shape anywhere over the overlay. Capture
 exclusion hides the window's pixels but not the OS cursor sprite, so a cursor
 that turned into a hand would give the game away.
+
+### Answering what was just said
+
+Continuous listening has to guess where a question starts and ends, and it
+only gets one silence threshold to guess with: long enough not to chop a
+question that has a pause in the middle, short enough not to add latency to
+every answer. `Ctrl+;` sidesteps the guess.
+
+Audio is buffered continuously, so the last 45 seconds are always in memory
+whether VAD thought they were speech or not. The hotkey transcribes the last
+`GRAB_SECONDS` of it and answers that — no question filter, no waiting for
+silence. Press it *after* the question has been asked: there is nothing to
+hold down and nothing to anticipate, because the audio is already captured.
+
+Use it when continuous listening missed a question, split one in half, or
+answered something that was not a question at all. Continuous listening stays
+on the whole time — this is the deliberate path, not a replacement for it.
+
+### One answer at a time
+
+The newest question owns the answer panel. Ask another one — spoken, typed,
+retried, or grabbed — while an answer is still streaming and the old one
+stops mid-token and disappears, rather than finishing under the wrong
+question or making the new one wait for it. Screen captures are the
+exception in one direction: a capture press during an answer is ignored
+rather than queued, though a spoken question will still supersede a capture
+that is streaming.
 
 ### Answer styles
 

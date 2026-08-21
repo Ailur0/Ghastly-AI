@@ -178,6 +178,7 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
     total_text = ""
     token_count = 0
     pending = ""
+    response = None
 
     try:
         response = requests.post(url, json=payload, headers=headers, stream=True, timeout=30)
@@ -261,6 +262,15 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
         yield f"[Error: {e}]"
         yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
                          "full_text": "", "error": str(e)}}
+    finally:
+        # Reached on GeneratorExit too, which is how a superseded answer
+        # ends: the consumer closes the generator and the half-read
+        # response would otherwise hold its connection until GC.
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
 
 
 def query_ollama_stream(
@@ -407,6 +417,7 @@ def query_openrouter_vision_stream(
     first_token_time = None
     total_text = ""
     token_count = 0
+    response = None
 
     try:
         response = requests.post(url, json=payload, headers=headers, stream=True, timeout=30)
@@ -493,6 +504,12 @@ def query_openrouter_vision_stream(
         yield f"[Error: {e}]"
         yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
                          "full_text": "", "error": str(e)}}
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
 
 
 def query_ollama(

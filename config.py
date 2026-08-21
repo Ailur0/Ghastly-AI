@@ -73,6 +73,16 @@ PANIC_HOTKEY = os.environ.get("PANIC_HOTKEY", "ctrl+shift+space")
 OPACITY_HOTKEY = os.environ.get("OPACITY_HOTKEY", "ctrl+shift+o")
 # Answer the last question again — the hotkey twin of the retry button.
 RETRY_HOTKEY = os.environ.get("RETRY_HOTKEY", "ctrl+shift+r")
+# Answer what was just said: transcribe the last GRAB_SECONDS of audio and
+# answer it, no matter what VAD or the question filter made of it. Press it
+# after the question has been asked — there is nothing to hold and nothing
+# to anticipate, because the audio is already buffered.
+#
+# Two keys, not three, and both under the right hand: this is the only
+# hotkey pressed mid-question, so it has to be hittable without looking
+# down. Semicolon is unbound in VS Code, CoderPad, Chrome and the call
+# apps, and Ctrl avoids Alt's menu accelerators.
+GRAB_HOTKEY = os.environ.get("GRAB_HOTKEY", "ctrl+;")
 
 # === Logging ===
 # A windowed build has nowhere to print, so the log is the only way to see
@@ -97,6 +107,13 @@ SAMPLE_RATE = 16000  # Whisper expects 16kHz
 CHUNK_DURATION = 3  # seconds per audio chunk
 SILENCE_THRESHOLD = 0.01  # RMS threshold for silence detection
 SILENCE_DURATION = 1.0  # seconds of silence before processing chunk
+# How far back the grab hotkey reaches. Long enough for a question asked
+# slowly with a pause in the middle, short enough not to drag in the answer
+# to the previous one.
+GRAB_SECONDS = float(os.environ.get("GRAB_SECONDS", "20"))
+# The rolling window the grab slices from. Must exceed GRAB_SECONDS, with
+# room for the second or two between the question ending and you pressing.
+AUDIO_RING_SEC = float(os.environ.get("AUDIO_RING_SEC", "45"))
 
 # === Ghost Overlay (Cluely Design System) ===
 OVERLAY_OPACITY_OPAQUE = 1.0        # 0.0-1.0 (Qt window opacity scale)

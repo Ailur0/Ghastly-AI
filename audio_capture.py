@@ -14,6 +14,7 @@ Backends:
 import numpy as np
 import queue
 import threading
+from collections import deque
 import time
 import logging
 import subprocess
@@ -48,7 +49,7 @@ except (ImportError, OSError):
 class AudioCapture:
     def __init__(self, sample_rate=16000, chunk_duration=3, 
                  silence_threshold=0.01, silence_duration=1.5,
-                 min_utterance_sec=1.2):
+                 min_utterance_sec=1.2, ring_seconds=30):
         self.sample_rate = sample_rate
         # Utterances shorter than this never reach the transcription API:
         # "mm-hm" and "right" are not questions, and each one would cost a
@@ -66,6 +67,15 @@ class AudioCapture:
         # speaker the WASAPI loopback was opened against.
         self.last_frame_time = None
         self._opened_speaker_id = None
+
+        # Everything heard in the last `ring_seconds`, whether or not VAD
+        # thought it was speech. The grab hotkey slices its window out of
+        # here, which is why it can answer a question that was already over
+        # by the time you decided you wanted help with it.
+        self._ring = deque()
+        self._ring_samples = 0
+        self._ring_capacity = int(sample_rate * ring_seconds)
+        self._ring_lock = threading.Lock()
 
         self.audio_queue = queue.Queue()
         self.is_running = False
@@ -175,6 +185,39 @@ class AudioCapture:
     def _rms(self, audio_chunk):
         """Calculate RMS energy of audio chunk."""
         return np.sqrt(np.mean(np.square(audio_chunk)))
+
+    def _ring_push(self, audio):
+        """Add a frame to the rolling window, dropping the oldest to fit."""
+        with self._ring_lock:
+            self._ring.append(audio.copy())
+            self._ring_samples += len(audio)
+            while self._ring_samples > self._ring_capacity and self._ring:
+                self._ring_samples -= len(self._ring.popleft())
+
+    def _ring_clear(self):
+        """Drop the rolling window — called when capture moves device."""
+        with self._ring_lock:
+            self._ring.clear()
+            self._ring_samples = 0
+
+    def grab_recent(self, seconds: float):
+        """
+        The last `seconds` of audio, or None if barely anything is buffered.
+
+        Unlike the VAD path this ignores speech boundaries entirely: it
+        returns the window as heard, silence included, because the press
+        that asked for it is the only intent signal needed.
+        """
+        wanted = int(self.sample_rate * seconds)
+        with self._ring_lock:
+            if self._ring_samples < self.sample_rate * self.min_utterance_sec:
+                logger.info(
+                    f"Grab found only {self._ring_samples / self.sample_rate:.1f}s "
+                    f"buffered (floor {self.min_utterance_sec}s)")
+                return None
+            frames = list(self._ring)
+        combined = np.concatenate(frames)
+        return combined[-wanted:] if len(combined) > wanted else combined
     
     def _audio_callback(self, indata, frames, time_info, status):
         """PortAudio callback — called for each audio frame."""
@@ -191,6 +234,7 @@ class AudioCapture:
     def _process_audio(self, audio):
         """Process audio buffer with VAD — shared between backends."""
         self.last_frame_time = time.time()
+        self._ring_push(audio)
         rms = self._rms(audio)
         
         # Debug: log every 10th frame (every 1s)
@@ -319,6 +363,9 @@ class AudioCapture:
     def start(self):
         """Start capturing audio."""
         self.is_running = True
+        # Whatever the previous device left behind is not what the grab
+        # hotkey means by "the last twenty seconds".
+        self._ring_clear()
 
         # A device picked explicitly decides the backend; "sd:" means the
         # user chose a PortAudio input, so skip the WASAPI path entirely.
