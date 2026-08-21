@@ -106,7 +106,12 @@ def build_prompt(question: str, context: str, state: dict) -> str:
     language = state.get("code_language", "Auto")
     language_line = ""
     if language and language != "Auto":
-        language_line = f"\nWrite any code in {language}."
+        # Conditional on purpose: the old wording read as an instruction to
+        # produce code, so with a language pinned "tell me about yourself"
+        # came back as a PHP script echoing an introduction.
+        language_line = (f"\nIf the answer includes code, write that code in "
+                         f"{language}. Never add code to an answer that does "
+                         f"not need any.")
 
     style_rule = ANSWER_STYLE_RULES.get(state.get("answer_style", "Balanced"), "")
     style_line = f"\n{style_rule}" if style_rule else ""

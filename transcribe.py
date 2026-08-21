@@ -11,6 +11,7 @@ import io
 import wave
 import time
 import logging
+import re
 import numpy as np
 import requests
 
@@ -122,38 +123,76 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000, **kwargs) -> dict:
     return transcribe_groq(audio, sample_rate, **kwargs)
 
 
+# Whisper hallucinates these on near-silence, and interviewers say them
+# constantly. Every one used to cost an answer.
+FILLER = {
+    "hmm", "hm", "mhm", "mm-hmm", "mmhmm", "uh", "um", "er", "ah", "oh",
+    "yeah", "yea", "yep", "yes", "no", "nope", "okay", "ok", "alright",
+    "right", "sure", "cool", "nice", "great", "perfect", "exactly",
+    "thank you", "thanks", "thank you so much", "bye", "goodbye",
+    "good night", "good morning", "hello", "hi", "hey", "so", "you",
+    "that's it", "seriously", "end", "the end", "you too", "same to you",
+}
+
+# A question can open with any of these, however short it is.
+QUESTION_STARTERS = (
+    "what", "how", "why", "when", "where", "who", "which", "whose",
+    "can you", "could you", "would you", "will you", "do you", "does",
+    "did you", "have you", "has", "are you", "is it", "is that", "was",
+    "were", "should", "shall", "may i", "tell me", "explain", "describe",
+    "walk me", "walk us", "take me", "take us", "run me", "give me",
+    "show me", "let's talk", "talk me", "talk about", "difference between",
+    "implement", "design", "solve", "optimize", "debug", "fix", "write",
+    "compare", "suppose", "imagine", "consider",
+)
+
+# Enough of a question buried mid-sentence to count, given some length.
+EMBEDDED_ASKS = (
+    "tell me", "explain", "describe", "walk me", "walk us", "how do",
+    "how would", "how did", "what is", "what's", "what would", "why did",
+    "why do", "why not", "can you", "could you", "would you",
+)
+
+MIN_STARTER_WORDS = 2      # "Why Python?" is a real question
+MIN_QMARK_WORDS = 5        # but "Hmm?" and "You too, right?" are not
+MIN_EMBEDDED_WORDS = 4
+
+
 def is_question(text: str) -> bool:
     """
-    Heuristic: check if transcribed text is likely a question.
-    Filters out small talk, filler, and non-questions.
+    Is this transcript worth spending an answer on?
+
+    Deliberately strict. Everything reaching here already cost a
+    transcription request; what it gates is an LLM call and a panel full of
+    text, and an interviewer saying "mm-hmm" every few seconds used to
+    trigger both. A missed question costs one press of the retry button or
+    the ask box; a false positive buries the answer you actually needed.
     """
-    if not text or len(text.strip()) < 3:
+    if not text:
         return False
-    
-    text_lower = text.lower().strip()
-    
-    # Question indicators
-    question_words = [
-        "what", "how", "why", "when", "where", "who", "which",
-        "can you", "could you", "would you", "do you", "did you",
-        "have you", "are you", "is it", "tell me", "explain",
-        "describe", "walk me", "give me", "show me",
-        "what's", "difference between", "implement", "design",
-        "solve", "optimize", "debug", "fix",
-        "walk us", "take us", "let's talk",
-    ]
-    
-    for word in question_words:
-        if text_lower.startswith(word):
-            return True
-    
-    if text.strip().endswith("?"):
+
+    cleaned = text.strip()
+    lowered = cleaned.lower().strip(" .,!?\"'“”‘’-")
+    words = [w for w in re.split(r"[^\w']+", lowered) if w]
+
+    if not words or lowered in FILLER:
+        return False
+
+    # "Thank you." with a full stop, "Bye!", "Okay?" — filler with punctuation.
+    if len(words) <= 2 and lowered in FILLER:
+        return False
+
+    starts_with_ask = any(lowered.startswith(starter) for starter in QUESTION_STARTERS)
+    if starts_with_ask and len(words) >= MIN_STARTER_WORDS:
         return True
-    
-    # Long enough to be a meaningful statement
-    if len(text.split()) >= 5:
+
+    if cleaned.endswith("?") and len(words) >= MIN_QMARK_WORDS:
         return True
-    
+
+    padded = f" {lowered} "
+    if len(words) >= MIN_EMBEDDED_WORDS and any(f" {a} " in padded for a in EMBEDDED_ASKS):
+        return True
+
     return False
 
 
