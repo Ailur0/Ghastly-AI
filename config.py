@@ -65,6 +65,10 @@ SINGLE_INSTANCE = os.environ.get("SINGLE_INSTANCE", "1").lower() not in ("0", "f
 # === Hotkeys ===
 # Hides / shows the overlay instantly without quitting it.
 PANIC_HOTKEY = os.environ.get("PANIC_HOTKEY", "ctrl+shift+space")
+# Opaque <-> translucent, without reaching for the sun/moon button.
+OPACITY_HOTKEY = os.environ.get("OPACITY_HOTKEY", "ctrl+shift+o")
+# Answer the last question again — the hotkey twin of the retry button.
+RETRY_HOTKEY = os.environ.get("RETRY_HOTKEY", "ctrl+shift+r")
 
 # === Logging ===
 # A windowed build has nowhere to print, so the log is the only way to see

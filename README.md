@@ -46,6 +46,8 @@ cp .env.example .env
 | `OLLAMA_VISION_MODEL` | Model for screen captures (default: `gemma4:31b` — the only free Ollama model that accepts images) |
 | `SCREEN_CAPTURE_HOTKEY` | Send the screen to the vision model (default: `ctrl+shift+h`) |
 | `PANIC_HOTKEY` | Hide / show the overlay without quitting (default: `ctrl+shift+space`) |
+| `OPACITY_HOTKEY` | Toggle opaque / translucent (default: `ctrl+shift+o`) |
+| `RETRY_HOTKEY` | Answer the last question again (default: `ctrl+shift+r`) |
 | `CODE_LANGUAGE` | Pins the answer language, overriding the setup panel (e.g. `Java`) |
 | `ANSWER_STYLE` | Pins the answer style (`Balanced`, `Snippet only`, `Text only`, `Full walkthrough`) |
 | `AUDIO_DEVICE` | Pins the capture device; otherwise picked in the setup panel |
@@ -80,10 +82,10 @@ the interviewer asks a question, the answer appears in the panel.
 
 | Control | What it does |
 |---|---|
-| ☀️ / 🌙 | Opaque or translucent |
+| ☀️ / 🌙 | Opaque or translucent (`Ctrl+Shift+O`) |
 | ℹ️ | Lists the active hotkeys |
 | 📎 | Setup panel — documents, answer language, answer style, audio source |
-| ↻ | Answer the last question again |
+| ↻ | Answer the last question again (`Ctrl+Shift+R`) |
 | ● | Close |
 | Corner squares | Drag to resize |
 | Double-click the bar | Collapse / expand the answer panel |

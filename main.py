@@ -98,7 +98,9 @@ class GhostInterviewAgent:
             opacity_translucent=config.OVERLAY_OPACITY_TRANSLUCENT,
             window_title=config.WINDOW_TITLE,
             hotkeys=[("Screen capture", config.SCREEN_CAPTURE_HOTKEY),
-                     ("Hide / show", config.PANIC_HOTKEY)],
+                     ("Hide / show", config.PANIC_HOTKEY),
+                     ("Opaque / translucent", config.OPACITY_HOTKEY),
+                     ("Answer last question", config.RETRY_HOTKEY)],
             languages=config.CODE_LANGUAGES,
             code_language=config.DEFAULT_CODE_LANGUAGE,
             answer_styles=config.ANSWER_STYLES,
@@ -119,6 +121,14 @@ class GhostInterviewAgent:
         self.panic_listener = HotkeyListener(
             config.PANIC_HOTKEY,
             self.on_panic_hotkey
+        )
+        self.opacity_listener = HotkeyListener(
+            config.OPACITY_HOTKEY,
+            self.on_opacity_hotkey
+        )
+        self.retry_listener = HotkeyListener(
+            config.RETRY_HOTKEY,
+            self.on_retry
         )
         # Last question asked, so the retry button has something to re-run.
         self._last_question = None
@@ -154,6 +164,11 @@ class GhostInterviewAgent:
         """Hide or show the overlay without quitting it."""
         logger.info("Panic hotkey pressed")
         self.overlay.toggle_visibility()
+
+    def on_opacity_hotkey(self):
+        """Flip the overlay between opaque and translucent."""
+        logger.info("Opacity hotkey pressed")
+        self.overlay.toggle_opacity()
 
     def on_setup_changed(self, kind: str, value):
         """
@@ -267,12 +282,17 @@ class GhostInterviewAgent:
         self.audio.list_devices()
 
         # Register screen capture hotkey
-        logger.info("Registering panic hotkey...")
-        if self.panic_listener.start():
-            logger.info(f"Panic hotkey registered: {config.PANIC_HOTKEY}")
-        else:
-            logger.warning(f"Panic hotkey registration failed — "
-                           f"'{config.PANIC_HOTKEY}' may be taken")
+        for label, listener, combo in (
+            ("Panic", self.panic_listener, config.PANIC_HOTKEY),
+            ("Opacity", self.opacity_listener, config.OPACITY_HOTKEY),
+            ("Retry", self.retry_listener, config.RETRY_HOTKEY),
+        ):
+            logger.info(f"Registering {label.lower()} hotkey...")
+            if listener.start():
+                logger.info(f"{label} hotkey registered: {combo}")
+            else:
+                logger.warning(f"{label} hotkey registration failed — "
+                               f"'{combo}' may be taken by another app")
 
         logger.info("Registering screen capture hotkey...")
         if self.hotkey_listener.start():
@@ -536,6 +556,8 @@ class GhostInterviewAgent:
         self.audio.stop()
         self.hotkey_listener.stop()
         self.panic_listener.stop()
+        self.opacity_listener.stop()
+        self.retry_listener.stop()
         self.overlay.stop()
 
         logger.info("Ghastly AI stopped")

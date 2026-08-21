@@ -166,6 +166,7 @@ if HAS_PYQT:
         append_html = pyqtSignal(str)             # html block
         set_status  = pyqtSignal(str)             # status key
         toggle_vis  = pyqtSignal()                # panic hotkey -> hide/show
+        toggle_op   = pyqtSignal()                # opacity hotkey -> sun/moon
 
     class DraggableWidget(QWidget):
         """QWidget that drags its top-level window on mouse press+move."""
@@ -693,6 +694,7 @@ class GhostOverlay:
             self.signals.append_html.connect(self._slot_append_html)
             self.signals.set_status.connect(self._slot_set_status)
             self.signals.toggle_vis.connect(self._slot_toggle_visible)
+            self.signals.toggle_op.connect(self._toggle_opacity)
 
     # ────────────────────────────────────────────────
     #  Window positioning
@@ -1213,6 +1215,11 @@ class GhostOverlay:
         """Hide / show the whole overlay. Thread-safe (panic hotkey)."""
         if self._is_running and HAS_PYQT and hasattr(self, 'signals'):
             self.signals.toggle_vis.emit()
+
+    def toggle_opacity(self):
+        """Flip opaque / translucent. Thread-safe (global hotkey)."""
+        if self._is_running and HAS_PYQT and hasattr(self, 'signals'):
+            self.signals.toggle_op.emit()
 
     def _slot_toggle_visible(self):
         if not self.window:
