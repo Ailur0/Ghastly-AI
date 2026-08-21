@@ -62,6 +62,11 @@ class AudioCapture:
         # soundcard) or "sd:<index>" (PortAudio input via sounddevice).
         self.device_id = "Auto"
 
+        # Watchdog bookkeeping: when the last frame arrived, and which
+        # speaker the WASAPI loopback was opened against.
+        self.last_frame_time = None
+        self._opened_speaker_id = None
+
         self.audio_queue = queue.Queue()
         self.is_running = False
         self._thread = None
@@ -185,6 +190,7 @@ class AudioCapture:
     
     def _process_audio(self, audio):
         """Process audio buffer with VAD — shared between backends."""
+        self.last_frame_time = time.time()
         rms = self._rms(audio)
         
         # Debug: log every 10th frame (every 1s)
@@ -230,9 +236,14 @@ class AudioCapture:
         try:
             if str(self.device_id).startswith("sc:"):
                 mic = sc.get_microphone(id=self.device_id[3:], include_loopback=True)
+                self._opened_speaker_id = None
             else:
                 spk = sc.default_speaker()
-                mic = sc.get_microphone(id=str(spk.id), include_loopback=True)
+                # Remembered so the watchdog can tell when Windows switches
+                # the default out from under us.
+                self._opened_speaker_id = str(spk.id)
+                mic = sc.get_microphone(id=self._opened_speaker_id,
+                                        include_loopback=True)
             logger.info(f"Using soundcard loopback device: {mic.name}")
             
             with mic.recorder(samplerate=self.sample_rate, channels=1) as recorder:
@@ -366,6 +377,26 @@ class AudioCapture:
             self._thread.join(timeout=2)
         logger.info("Audio capture stopped")
     
+    def default_device_changed(self) -> bool:
+        """
+        True when we are following the default speaker and Windows has since
+        made a different one default — headphones plugged in, a headset
+        connecting, a call app grabbing a device.
+        """
+        if self._opened_speaker_id is None or not SOUNDCARD_AVAILABLE:
+            return False
+        try:
+            return str(sc.default_speaker().id) != self._opened_speaker_id
+        except Exception as e:
+            logger.debug(f"Could not read the default speaker: {e}")
+            return False
+
+    def seconds_since_last_frame(self):
+        """How long since any audio arrived, or None before the first frame."""
+        if self.last_frame_time is None:
+            return None
+        return time.time() - self.last_frame_time
+
     def get_audio_chunk(self, timeout=30):
         """Get the next audio chunk from the queue. Blocks until available."""
         try:

@@ -96,6 +96,7 @@ class GhostInterviewAgent:
             position=config.OVERLAY_POSITION,
             opacity_opaque=config.OVERLAY_OPACITY_OPAQUE,
             opacity_translucent=config.OVERLAY_OPACITY_TRANSLUCENT,
+            window_title=config.WINDOW_TITLE,
             hotkeys=[("Screen capture", config.SCREEN_CAPTURE_HOTKEY),
                      ("Hide / show", config.PANIC_HOTKEY)],
             languages=config.CODE_LANGUAGES,
@@ -121,6 +122,9 @@ class GhostInterviewAgent:
         )
         # Last question asked, so the retry button has something to re-run.
         self._last_question = None
+        # One answer streams at a time. Two questions in quick succession
+        # would otherwise interleave their tokens in the same panel.
+        self._answer_lock = threading.Lock()
         self._screen_capture_lock = threading.Lock()
         self._audio_answering_lock = threading.Lock()
         self._audio_answering_count = 0
@@ -166,6 +170,40 @@ class GhostInterviewAgent:
         elif kind == "audio_device":
             self.context_mgr.set_audio_device(value)
             self.restart_audio(value)
+
+    def _audio_watchdog(self):
+        """
+        Watch for capture dying quietly.
+
+        The recorder holds one device open. If Windows switches the default
+        speaker — headphones, a Bluetooth headset, a call app taking over —
+        the old handle keeps returning silence and the status pill happily
+        says "listening" while nothing is heard again.
+        """
+        while self.is_running:
+            time.sleep(config.AUDIO_WATCHDOG_SEC)
+            if not self.is_running:
+                return
+            try:
+                if self.audio.default_device_changed():
+                    logger.warning("Default audio device changed — reopening capture")
+                    self.notify("Audio device changed — reconnected to the new one.")
+                    self.restart_audio(self.context_mgr.get_audio_device())
+                    continue
+
+                stalled = self.audio.seconds_since_last_frame()
+                if stalled is not None and stalled > config.AUDIO_STALL_SEC:
+                    logger.warning(f"No audio for {stalled:.0f}s — reopening capture")
+                    self.notify("Audio capture stalled — restarting it.")
+                    self.restart_audio(self.context_mgr.get_audio_device())
+            except Exception as e:
+                logger.error(f"Audio watchdog error: {e}")
+
+    def notify(self, message: str):
+        """A small grey line in the answer panel."""
+        self.overlay.append_html(
+            '<div style="color:#334155;font-size:12px;padding-left:4px;'
+            f'margin:6px 0;">{message}</div>')
 
     def restart_audio(self, device_id: str):
         """Point capture at a new device. The queue survives the swap, so the
@@ -268,6 +306,11 @@ class GhostInterviewAgent:
         start_time = time.time()
         self._last_question = question_text
 
+        # Wait for any answer in flight rather than writing over it.
+        if not self._answer_lock.acquire(timeout=90):
+            logger.warning("Gave up waiting for the previous answer to finish")
+            return
+
         with self._audio_answering_lock:
             self._audio_answering_count += 1
         try:
@@ -326,6 +369,7 @@ class GhostInterviewAgent:
             # Back to listening
             self.overlay.set_status("listening")
         finally:
+            self._answer_lock.release()
             with self._audio_answering_lock:
                 self._audio_answering_count -= 1
 
@@ -353,6 +397,13 @@ class GhostInterviewAgent:
     def _process_screen_capture(self):
         """Capture the screen, query the vision LLM, stream to overlay."""
         start_time = time.time()
+        # Same lock as spoken answers, so a capture cannot interleave with
+        # one. Non-blocking: a hotkey press during an answer is dropped
+        # rather than queued, which is what pressing it again is for.
+        if not self._answer_lock.acquire(blocking=False):
+            logger.info("Answer in progress, ignoring the screen capture")
+            self._screen_capture_lock.release()
+            return
         try:
             self.overlay.set_status("answering")
             self.overlay.show_question("[Screen capture]")
@@ -402,6 +453,7 @@ class GhostInterviewAgent:
             logger.error(f"Screen capture query failed: {e}")
             self.overlay.stream_answer(f"\n[Error: {e}]")
         finally:
+            self._answer_lock.release()
             self._screen_capture_lock.release()
             self.overlay.set_status("listening")
 
@@ -412,6 +464,9 @@ class GhostInterviewAgent:
         # Start audio listening in background thread
         listen_thread = threading.Thread(target=self._listen_loop, daemon=True)
         listen_thread.start()
+
+        watchdog = threading.Thread(target=self._audio_watchdog, daemon=True)
+        watchdog.start()
         
         # Run GUI event loop on main thread (blocks until overlay closed or Ctrl+C)
         self.overlay.exec()
@@ -486,6 +541,33 @@ class GhostInterviewAgent:
         logger.info("Ghastly AI stopped")
 
 
+def claim_single_instance() -> bool:
+    """
+    True if this is the only copy running.
+
+    Two copies fight over the audio device and the global hotkeys — the
+    second one's registration fails, which looks like "the hotkeys stopped
+    working" rather than "you started it twice".
+    """
+    if not sys.platform == "win32":
+        return True
+    try:
+        import ctypes
+        ERROR_ALREADY_EXISTS = 183
+        handle = ctypes.windll.kernel32.CreateMutexW(
+            None, False, "Global\\GhastlyAI_SingleInstance")
+        if not handle:
+            return True                       # cannot tell; do not block
+        if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            return False
+        # Deliberately leaked: the mutex must outlive this call and is freed
+        # by Windows when the process exits.
+        return True
+    except Exception as e:
+        logger.warning(f"Single-instance check skipped: {e}")
+        return True
+
+
 def signal_handler(sig, frame):
     """Handle Ctrl+C."""
     logger.info("Interrupt received, shutting down...")
@@ -496,7 +578,13 @@ def signal_handler(sig, frame):
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
-    
+
+    if config.SINGLE_INSTANCE and not claim_single_instance():
+        logger.warning("Another copy of Ghastly AI is already running — "
+                       "exiting so the two do not fight over the audio "
+                       "device and the hotkeys")
+        sys.exit(0)
+
     agent = GhostInterviewAgent()
     signal_handler.agent = agent
     

@@ -60,15 +60,35 @@ def exclude_from_capture(widget) -> bool:
     WDA_EXCLUDEFROMCAPTURE applies per HWND, so every window the app puts on
     screen needs its own call — the affinity set on the overlay does not
     inherit to anything else.
+
+    The result is read back rather than assumed. The flag needs Windows 10
+    build 19041; on anything older the call fails and the window is plainly
+    visible in a screen share, which is worth knowing before an interview
+    rather than during one.
     """
     if not IS_WINDOWS:
         return False
     try:
-        ctypes.windll.user32.SetWindowDisplayAffinity(
-            int(widget.winId()), WDA_EXCLUDEFROMCAPTURE)
-        return True
+        hwnd = int(widget.winId())
+        ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+        return is_excluded(hwnd)
     except Exception as e:
         logger.error(f"Capture exclusion failed for {widget}: {e}")
+        return False
+
+
+def is_excluded(hwnd) -> bool:
+    """Whether this window really is hidden from capture, per Windows."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        affinity = ctypes.c_ulong()
+        if not ctypes.windll.user32.GetWindowDisplayAffinity(
+                int(hwnd), ctypes.byref(affinity)):
+            return False
+        return affinity.value == WDA_EXCLUDEFROMCAPTURE
+    except Exception as e:
+        logger.error(f"Could not read display affinity: {e}")
         return False
 
 
@@ -279,7 +299,7 @@ if HAS_PYQT:
             self.on_changed = on_changed          # (kind, value) -> None
             languages, current_language = owner.languages, owner.code_language
             styles, current_style = owner.answer_styles, owner.answer_style
-            self.setWindowTitle("Ghastly AI — Setup")
+            self.setWindowTitle(f"{owner.window_title} — Setup")
             self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint
                                 | Qt.WindowStaysOnTopHint | Qt.Tool)
             self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -657,6 +677,10 @@ class GhostOverlay:
         self._capture_shield = None
         self._sweep_timer = None
 
+        # Set once the window exists and Windows confirms the flag stuck.
+        self.capture_hidden = False
+        self.window_title = kwargs.get("window_title", "System Audio Helper")
+
         self._is_running = False
         self._expanded = True
         self._opaque = True
@@ -691,11 +715,19 @@ class GhostOverlay:
     # ────────────────────────────────────────────────
     def _set_wda(self, exclude: bool):
         if not IS_WINDOWS or not self._hwnd:
+            self.capture_hidden = False
             return
         try:
             flag = WDA_EXCLUDEFROMCAPTURE if exclude else WDA_NONE
             ctypes.windll.user32.SetWindowDisplayAffinity(self._hwnd, flag)
-            logger.info(f"WDA {'EXCLUDE' if exclude else 'NONE'}")
+            # Read it back: the call can fail quietly on Windows 10 before
+            # build 19041, and "we asked for it" is not the same as "it is on".
+            self.capture_hidden = is_excluded(self._hwnd) if exclude else False
+            if exclude and not self.capture_hidden:
+                logger.critical("WDA_EXCLUDEFROMCAPTURE did not take — this "
+                                "window IS VISIBLE to screen capture")
+            else:
+                logger.info(f"WDA {'EXCLUDE (verified)' if exclude else 'NONE'}")
         except Exception as e:
             logger.error(f"WDA error: {e}")
 
@@ -732,7 +764,9 @@ class GhostOverlay:
         total_h = self.BAR_H + self.PANEL_H + 32
 
         self.window = QWidget()
-        self.window.setWindowTitle("Ghastly AI")
+        # The OS-level title is readable by anything that enumerates windows;
+        # the name shown inside the bar is a label, not this.
+        self.window.setWindowTitle(self.window_title)
         self.window.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         )
@@ -994,6 +1028,21 @@ class GhostOverlay:
             self._hwnd = int(self.window.winId())
             # Always excluded from screen capture — not a toggle.
             self._set_wda(True)
+
+        if not self.capture_hidden:
+            reason = ("this platform has no equivalent of "
+                      "WDA_EXCLUDEFROMCAPTURE" if not IS_WINDOWS else
+                      "Windows refused it — build 19041 (Windows 10 2004) or "
+                      "newer is required")
+            self.append_html(
+                '<div style="background:rgba(220,38,38,0.10);'
+                'border-left:4px solid #DC2626;border-radius:8px;'
+                'padding:10px 14px;margin:10px 0;">'
+                '<span style="color:#DC2626;font-size:12px;font-weight:700;">'
+                'VISIBLE TO SCREEN CAPTURE</span><br/>'
+                '<span style="color:#0F172A;font-size:13px;">'
+                f'This overlay is NOT hidden — {reason}. '
+                'Anyone you share your screen with will see it.</span></div>')
 
         self._start_title_scramble()
 
