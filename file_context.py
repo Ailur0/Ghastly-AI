@@ -90,6 +90,50 @@ def writable_base() -> Path:
     return _writable_base
 
 
+def picker_flag_path() -> Path:
+    """Marker written while the file picker is open."""
+    return writable_base() / "context" / ".picker-open"
+
+
+def mark_picker_open(mode: str) -> None:
+    """
+    Record that a picker is being opened, and how.
+
+    Qt's file dialog can take the whole process down on machines with a
+    broken Windows shell extension — a hard crash, no exception, nothing to
+    catch. If this marker survives to the next launch, the picker is what
+    killed us, and the next attempt uses the native dialog instead.
+    """
+    try:
+        p = picker_flag_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(mode, encoding="utf-8")
+    except Exception as e:
+        logger.debug(f"Could not write the picker marker: {e}")
+
+
+def clear_picker_flag() -> None:
+    try:
+        picker_flag_path().unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.debug(f"Could not clear the picker marker: {e}")
+
+
+def picker_crashed_last_time() -> str:
+    """The mode a previous run died in, or "" if the last picker closed cleanly."""
+    try:
+        p = picker_flag_path()
+        if p.exists():
+            mode = p.read_text(encoding="utf-8", errors="replace").strip()
+            p.unlink()
+            return mode or "qt"
+    except Exception as e:
+        logger.debug(f"Could not read the picker marker: {e}")
+    return ""
+
+
 def uploads_dir() -> Path:
     """Writable folder for uploaded documents."""
     d = writable_base() / "context" / "uploaded"

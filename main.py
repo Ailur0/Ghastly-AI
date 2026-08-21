@@ -72,6 +72,16 @@ def _log_unhandled(exc_type, exc, tb):
 sys.excepthook = _log_unhandled
 
 
+# Did a previous run die with the file picker open? Read once, at import,
+# before anything can write the marker again.
+import file_context as _file_context
+_picker_crashed = bool(_file_context.picker_crashed_last_time())
+if _picker_crashed:
+    logger.warning("The file picker crashed the app last time — using the "
+                   "native Windows picker from now on (it is NOT hidden from "
+                   "screen capture)")
+
+
 class GhostInterviewAgent:
     def __init__(self):
         # Initialize components
@@ -108,6 +118,7 @@ class GhostInterviewAgent:
             audio_devices=self.audio.list_input_devices(),
             audio_device=config.AUDIO_DEVICE,
             auto_scroll=config.AUTO_SCROLL,
+            force_native_picker=_picker_crashed,
             on_question_typed=self.on_question_typed,
             on_retry=self.on_retry,
             on_setup_changed=self.on_setup_changed,
@@ -275,6 +286,12 @@ class GhostInterviewAgent:
         logger.info("Starting ghost overlay...")
         self.overlay.init_window()
         self.overlay.set_status("ready")
+        if _picker_crashed:
+            self.overlay.append_html(
+                '<div style="color:#B45309;font-size:12px;padding-left:4px;'
+                'margin:6px 0;">The file picker closed the app last time, so '
+                'the Windows one is being used instead. It is visible in a '
+                'screen share while open.</div>')
         logger.info("Overlay initialized")
         
         # List audio devices

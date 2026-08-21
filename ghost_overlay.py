@@ -39,8 +39,9 @@ try:
         QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
         QTextEdit, QFrame, QGraphicsDropShadowEffect, QPushButton,
         QDialog, QListWidget, QListWidgetItem, QComboBox,
-        QFileDialog, QLineEdit
+        QFileDialog, QLineEdit, QFileIconProvider
     )
+    from PyQt5.QtCore import QUrl, QStandardPaths
     from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent
     from PyQt5.QtGui import (
         QColor, QTextCursor, QCursor, QPainter, QPen, QBrush
@@ -134,6 +135,22 @@ def exclude_process_windows() -> int:
 
 
 if HAS_PYQT:
+    class BlankIconProvider(QFileIconProvider):
+        """
+        Hands back nothing instead of asking Windows for file icons.
+
+        QFileDialog's default provider calls SHGetFileInfo, which loads
+        third-party shell extensions — cloud sync, antivirus, archivers —
+        into this process. One faulty extension takes the whole app down
+        with no Python exception to catch, which is exactly what building
+        the picker did on one machine.
+        """
+
+        def icon(self, _info):
+            from PyQt5.QtGui import QIcon
+            return QIcon()
+
+
     class CaptureShield(QObject):
         """
         Application-wide event filter that excludes every window the app shows.
@@ -515,14 +532,28 @@ if HAS_PYQT:
             antivirus killing the process — takes the app with it and leaves
             no traceback. The breadcrumbs are what tell us which step it was.
             """
-            logger.info("Upload: building the file picker "
-                        f"(native={config.NATIVE_FILE_DIALOG})")
+            native = config.NATIVE_FILE_DIALOG or self.owner.force_native_picker
+            logger.info(f"Upload: building the file picker (native={native})")
+            # If this line is the last thing in the log, the picker crashed
+            # the process and the next launch will switch to the native one.
+            file_context.mark_picker_open("native" if native else "qt")
+
             dlg = QFileDialog(self, "Add resume or notes")
             dlg.setFileMode(QFileDialog.ExistingFiles)
-            if not config.NATIVE_FILE_DIALOG:
+            if not native:
                 # Qt's own dialog, not the native one — see the class
                 # docstring. The native one cannot be hidden from capture.
                 dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+                # Keep the Windows shell out of it: no shell icon lookups, no
+                # shell-populated sidebar, and start somewhere plain.
+                dlg.setOption(QFileDialog.DontUseCustomDirectoryIcons, True)
+                dlg.setIconProvider(BlankIconProvider())
+                home = QStandardPaths.writableLocation(QStandardPaths.HomeLocation)
+                downloads = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
+                dlg.setSidebarUrls([QUrl.fromLocalFile(p)
+                                    for p in (home, downloads) if p])
+                if home:
+                    dlg.setDirectory(home)
             dlg.setNameFilter("Documents (*.pdf *.docx *.txt *.md *.json *.csv);;All files (*)")
 
             # Exclude it once it is on screen. Queued rather than show()-then-
@@ -532,6 +563,7 @@ if HAS_PYQT:
 
             logger.info("Upload: opening the file picker")
             accepted = dlg.exec_()
+            file_context.clear_picker_flag()
             logger.info(f"Upload: picker closed (accepted={bool(accepted)})")
             if not accepted:
                 return
@@ -687,6 +719,8 @@ class GhostOverlay:
         self.audio_devices = kwargs.get("audio_devices", [("Auto", "Auto — detect")])
         self.audio_device = kwargs.get("audio_device", "Auto")
         self.auto_scroll = kwargs.get("auto_scroll", True)
+        # Flipped on when a previous run died with the Qt picker open.
+        self.force_native_picker = kwargs.get("force_native_picker", False)
         # Called with the text of a typed question, and with no arguments to
         # re-answer the last one.
         self.on_question_typed = kwargs.get("on_question_typed", None)
@@ -1188,7 +1222,9 @@ class GhostOverlay:
         a message in the panel, not a vanished app.
         """
         try:
+            logger.info("Setup: opening the panel")
             self._build_and_show_setup()
+            logger.info("Setup: panel ready")
         except Exception as e:
             logger.exception("Could not open the setup panel")
             self._setup_dialog = None
