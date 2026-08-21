@@ -59,6 +59,10 @@ SCREEN_CAPTURE_PROMPT = (
 # Task Manager, proctoring tools. Kept in step with the executable name; the
 # name shown inside the overlay is separate and stays "Ghastly AI".
 WINDOW_TITLE = os.environ.get("WINDOW_TITLE", "System Audio Helper")
+# Escape hatch: the file picker uses Qt's own widget so it can be hidden from
+# screen capture. Set NATIVE_FILE_DIALOG=1 if Qt's picker misbehaves on a
+# machine — the native Explorer dialog is NOT hidden from capture.
+NATIVE_FILE_DIALOG = os.environ.get("NATIVE_FILE_DIALOG", "0").lower() in ("1", "true", "yes")
 # A second copy would fight the first for the audio device and the hotkeys.
 SINGLE_INSTANCE = os.environ.get("SINGLE_INSTANCE", "1").lower() not in ("0", "false", "no")
 

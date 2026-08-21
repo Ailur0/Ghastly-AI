@@ -22,6 +22,7 @@ import logging
 import ctypes
 import random
 
+import config
 import file_context
 
 logger = logging.getLogger(__name__)
@@ -506,24 +507,55 @@ if HAS_PYQT:
                 self.status.setText(f"Could not add files: {e}")
 
         def _pick_files_inner(self):
+            """
+            Every step logs before it runs.
+
+            A Python exception here is caught and shown, but a crash below
+            Python — in Qt, in a shell extension the picker loads, or an
+            antivirus killing the process — takes the app with it and leaves
+            no traceback. The breadcrumbs are what tell us which step it was.
+            """
+            logger.info("Upload: building the file picker "
+                        f"(native={config.NATIVE_FILE_DIALOG})")
             dlg = QFileDialog(self, "Add resume or notes")
             dlg.setFileMode(QFileDialog.ExistingFiles)
-            # Qt's own dialog, not the native one — see the class docstring.
-            dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+            if not config.NATIVE_FILE_DIALOG:
+                # Qt's own dialog, not the native one — see the class
+                # docstring. The native one cannot be hidden from capture.
+                dlg.setOption(QFileDialog.DontUseNativeDialog, True)
             dlg.setNameFilter("Documents (*.pdf *.docx *.txt *.md *.json *.csv);;All files (*)")
-            dlg.show()
-            exclude_from_capture(dlg)
-            if not dlg.exec_():
+
+            # Exclude it once it is on screen. Queued rather than show()-then-
+            # exec_(), which meant opening the dialog twice.
+            QTimer.singleShot(0, lambda: exclude_from_capture(dlg))
+            QTimer.singleShot(80, exclude_process_windows)
+
+            logger.info("Upload: opening the file picker")
+            accepted = dlg.exec_()
+            logger.info(f"Upload: picker closed (accepted={bool(accepted)})")
+            if not accepted:
                 return
 
-            added, errors = 0, []
-            for path in dlg.selectedFiles():
-                try:
-                    file_context.add_file(path)
-                    added += 1
-                except Exception as e:
-                    errors.append(f"{os.path.basename(path)}: {e}")
+            selected = dlg.selectedFiles()
+            logger.info(f"Upload: {len(selected)} file(s) chosen")
 
+            added, errors = 0, []
+            for path in selected:
+                name = os.path.basename(path)
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = -1
+                logger.info(f"Upload: extracting {name} ({size} bytes)")
+                try:
+                    stored = file_context.add_file(path)
+                    added += 1
+                    logger.info(f"Upload: stored {name} as {stored}")
+                except Exception as e:
+                    logger.exception(f"Upload: {name} failed")
+                    errors.append(f"{name}: {e}")
+
+            logger.info("Upload: refreshing the list")
             self.refresh_files()
             if added:
                 self.on_changed("files", added)
@@ -531,6 +563,7 @@ if HAS_PYQT:
             if errors:
                 msg = (msg + "  " if msg else "") + "Skipped — " + "; ".join(errors)
             self.status.setText(msg)
+            logger.info(f"Upload: done — {added} added, {len(errors)} failed")
 
         def _remove_selected(self):
             try:
