@@ -44,7 +44,7 @@ try:
     from PyQt5.QtCore import QUrl, QStandardPaths
     from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent
     from PyQt5.QtGui import (
-        QColor, QTextCursor, QCursor, QPainter, QPen, QBrush
+        QColor, QTextCursor, QCursor, QPainter, QPen, QBrush, QKeySequence
     )
     HAS_PYQT = True
 except ImportError:
@@ -281,6 +281,75 @@ if HAS_PYQT:
             self._press_global = None
             event.accept()
 
+    class HotkeyButton(QPushButton):
+        def __init__(self, key_name, current_hotkey, on_changed, parent=None):
+            super().__init__(current_hotkey, parent)
+            self.key_name = key_name
+            self.current_hotkey = current_hotkey
+            self.on_changed = on_changed
+            self.listening = False
+            self.first_press = None
+            self.setStyleSheet("""
+                QPushButton {
+                    background: rgba(2,132,199,0.10);
+                    color: #0F172A;
+                    border: 1px solid rgba(2,132,199,0.35);
+                    border-radius: 7px;
+                    padding: 6px 12px;
+                    font-family: 'Segoe UI', sans-serif;
+                    font-size: 12px;
+                    font-weight: 600;
+                    text-align: center;
+                }
+                QPushButton:hover  { background: rgba(2,132,199,0.20); }
+                QPushButton:focus  { border: 1px solid rgba(2,132,199,0.80); background: rgba(2,132,199,0.15); }
+            """)
+            self.setCursor(Qt.ArrowCursor)
+
+        def mousePressEvent(self, event):
+            if event.button() == Qt.LeftButton:
+                self.listening = True
+                self.first_press = None
+                self.setText("Press hotkey...")
+                self.setFocus()
+            else:
+                super().mousePressEvent(event)
+
+        def focusOutEvent(self, event):
+            if self.listening:
+                self.listening = False
+                self.setText(self.current_hotkey)
+            super().focusOutEvent(event)
+
+        def keyPressEvent(self, event):
+            if not self.listening:
+                super().keyPressEvent(event)
+                return
+
+            key = event.key()
+            if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta):
+                return
+            
+            if key == Qt.Key_Escape:
+                self.listening = False
+                self.setText(self.current_hotkey)
+                return
+
+            seq = QKeySequence(key | int(event.modifiers())).toString(QKeySequence.PortableText).lower()
+            if not seq:
+                return
+
+            if self.first_press is None:
+                self.first_press = seq
+                self.setText(f"Press {seq} again to confirm...")
+            else:
+                if self.first_press == seq:
+                    self.current_hotkey = seq
+                    self.setText(seq)
+                    self.on_changed(self.key_name, seq)
+                else:
+                    self.setText(self.current_hotkey)
+                self.listening = False
 
     class SetupDialog(QDialog):
         """
@@ -489,6 +558,26 @@ if HAS_PYQT:
                                      "font-size:11px;background:transparent;border:none;")
             lay.addWidget(audio_hint)
 
+            # ── hotkeys ──
+            if owner.hotkeys:
+                hotkeys_label = QLabel("HOTKEYS")
+                hotkeys_label.setStyleSheet(self.LABEL_CSS)
+                lay.addWidget(hotkeys_label)
+
+                for label_text, current_hotkey in owner.hotkeys:
+                    row = QHBoxLayout()
+                    lbl = QLabel(label_text)
+                    lbl.setStyleSheet("color:#0F172A;font-family:'Segoe UI',sans-serif;"
+                                      "font-size:12px;background:transparent;border:none;")
+                    
+                    btn = HotkeyButton(label_text, current_hotkey, self._hotkey_changed)
+                    btn.setFixedWidth(160)
+
+                    row.addWidget(lbl)
+                    row.addStretch()
+                    row.addWidget(btn)
+                    lay.addLayout(row)
+
             self.refresh_files()
 
         # ── capture exclusion ──
@@ -651,6 +740,10 @@ if HAS_PYQT:
             self.status.setText(f"Code answers will use {text}."
                                 if text != "Auto" else
                                 "Code answers follow the question.")
+
+        def _hotkey_changed(self, key_name, new_value):
+            self.on_changed("hotkey", (key_name, new_value))
+            self.status.setText(f"Hotkey for '{key_name}' updated.")
 
 
 # ════════════════════════════════════════════════════════════════

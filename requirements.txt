@@ -4,7 +4,8 @@
 # Audio capture
 sounddevice==0.5.5
 soundcard==0.4.6
-numpy==2.5.1
+numpy==2.4.6
+Pillow==12.3.0
 
 # Ghost overlay (PyQt5 — primary)
 PyQt5==5.15.11

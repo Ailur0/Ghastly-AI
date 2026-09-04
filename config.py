@@ -29,18 +29,60 @@ if _env_path.exists():
                 key, val = line.split("=", 1)
                 os.environ.setdefault(key.strip(), val.strip())
 
+def update_env_file(key: str, value: str):
+    """Update a key in the .env file, preserving comments and structure."""
+    if not _env_path.exists():
+        with open(_env_path, "w", encoding="utf-8") as f:
+            f.write(f"{key}={value}\n")
+        return
+
+    lines = []
+    with open(_env_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    updated = False
+    for i, line in enumerate(lines):
+        if line.strip() and not line.startswith("#") and "=" in line:
+            k, _ = line.split("=", 1)
+            if k.strip() == key:
+                lines[i] = f"{key}={value}\n"
+                updated = True
+                break
+    
+    if not updated:
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
+        lines.append(f"{key}={value}\n")
+
+    with open(_env_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
 # === STT (Groq Whisper API) ===
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_WHISPER_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3")
 GROQ_BASE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
-# === LLM (Ollama Cloud) ===
-OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "nemotron-3-super")
-# Screen captures go to Ollama too — of the free models, only gemma4 takes
-# images (the nemotron family returns "does not support image input").
-OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "gemma4:31b")
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "https://api.ollama.com/api")
+# === LLM (Groq Cloud) ===
+# Previously Ollama/nemotron — now using Groq gpt-oss-120b.
+# Old Ollama config commented out below for easy rollback:
+# OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "")
+# OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "nemotron-3-super")
+# OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "gemma4:31b")
+# OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "https://api.ollama.com/api")
+GROQ_LLM_API_KEY = os.environ.get("GROQ_LLM_API_KEY", "")
+GROQ_LLM_MODEL = os.environ.get("GROQ_LLM_MODEL", "openai/gpt-oss-120b")
+# llama-3.2-11b-vision-preview is the free-tier vision model on Groq.
+# llama-4-scout (meta-llama/llama-4-scout-17b-16e-instruct) is faster but
+# requires a paid/verified Groq account — set GROQ_LLM_VISION_MODEL in .env
+# to switch once you have access.
+GROQ_LLM_VISION_MODEL = os.environ.get("GROQ_LLM_VISION_MODEL", "llama-3.2-11b-vision-preview")
+GROQ_LLM_BASE_URL = os.environ.get("GROQ_LLM_BASE_URL", "https://api.groq.com/openai/v1")
+# Aliases so existing code referencing OLLAMA_* keeps working without changes.
+OLLAMA_API_KEY = GROQ_LLM_API_KEY
+OLLAMA_MODEL = GROQ_LLM_MODEL
+OLLAMA_VISION_MODEL = GROQ_LLM_VISION_MODEL
+OLLAMA_BASE_URL = GROQ_LLM_BASE_URL
 
 # === Vision LLM (OpenRouter) ===
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")

@@ -23,7 +23,8 @@ import config
 from audio_capture import AudioCapture
 from transcribe import transcribe, is_question
 from llm_query import (
-    query_ollama_stream, query_ollama_vision_stream, tokens_for_style
+    query_ollama_stream, query_ollama_vision_stream,
+    query_openrouter_vision_stream, tokens_for_style
 )
 from context_manager import ContextManager, resolve_writable_path
 from ghost_overlay import GhostOverlay
@@ -247,6 +248,32 @@ class GhostInterviewAgent:
             logger.info(f"Context reloaded after upload: {chars} chars")
         elif kind == "language":
             self.context_mgr.set_code_language(value)
+        elif kind == "hotkey":
+            label, new_val = value
+            
+            listener_map = {
+                "Answer what was just said": ("GRAB_HOTKEY", self.grab_listener),
+                "Screen capture": ("SCREEN_CAPTURE_HOTKEY", self.hotkey_listener),
+                "Hide / show": ("PANIC_HOTKEY", self.panic_listener),
+                "Opaque / translucent": ("OPACITY_HOTKEY", self.opacity_listener),
+                "Answer last question": ("RETRY_HOTKEY", self.retry_listener)
+            }
+            
+            if label in listener_map:
+                env_key, listener = listener_map[label]
+                logger.info(f"Updating hotkey {env_key} to {new_val}")
+                config.update_env_file(env_key, new_val)
+                os.environ[env_key] = new_val
+                listener.stop()
+                listener.hotkey = new_val
+                listener.start()
+                
+                # Update the overlay's internal list so it persists in the UI
+                for i, (l, h) in enumerate(self.overlay.hotkeys):
+                    if l == label:
+                        self.overlay.hotkeys[i] = (l, new_val)
+                        break
+
         elif kind == "style":
             self.context_mgr.set_answer_style(value)
         elif kind == "audio_device":
@@ -558,7 +585,10 @@ class GhostInterviewAgent:
                            "[Error: screen capture failed]")
                 return
 
-            image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+            image_bytes = png_bytes
+            # Auto-detect MIME type: compressed capture returns JPEG, fallback is PNG
+            mime = "image/jpeg" if png_bytes[:2] == b"\xff\xd8" else "image/png"
+            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
             context = self.context_mgr.get_context_string()
             state = self.context_mgr.get_state()
@@ -567,6 +597,15 @@ class GhostInterviewAgent:
             meta = None
             superseded = False
 
+            # Route screen captures to Groq vision model (much faster than OpenRouter).
+            # Cap at 500 tokens — screen descriptions are brief, and some Groq
+            # free-tier vision models have a 1000 OTPM limit (requesting 1024
+            # would hit a 429 before a single response could complete).
+            _vision_tokens = min(
+                tokens_for_style(self.context_mgr.get_answer_style(),
+                                 config.MAX_ANSWER_CHARS // 4),
+                500
+            )
             stream = query_ollama_vision_stream(
                 image_b64=image_b64,
                 prompt=config.SCREEN_CAPTURE_PROMPT,
@@ -575,9 +614,8 @@ class GhostInterviewAgent:
                 api_key=config.OLLAMA_API_KEY,
                 model=config.OLLAMA_VISION_MODEL,
                 base_url=config.OLLAMA_BASE_URL,
-                max_tokens=tokens_for_style(
-                    self.context_mgr.get_answer_style(),
-                    config.MAX_ANSWER_CHARS // 4)
+                max_tokens=_vision_tokens,
+                mime=mime,
             )
             try:
                 for chunk in stream:

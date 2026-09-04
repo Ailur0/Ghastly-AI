@@ -13,18 +13,42 @@ import mss
 import mss.tools
 import keyboard
 
+try:
+    from PIL import Image
+    import io
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
 class ScreenCapture:
     """Captures the primary monitor as PNG bytes."""
 
-    def capture_primary_monitor(self) -> bytes:
+    def capture_primary_monitor(self, max_width: int = 1280, jpeg_quality: int = 75) -> bytes:
         with mss.MSS() as sct:
             # monitors[0] is the all-monitors bounding box; monitors[1] is the primary monitor
             monitor = sct.monitors[1]
             sct_img = sct.grab(monitor)
-            return mss.tools.to_png(sct_img.rgb, sct_img.size)
+
+            if _PIL_AVAILABLE:
+                # Downscale to max_width and convert to JPEG to drastically
+                # reduce payload size (full-res PNG can be 2-4 MB; this gets
+                # it under 200 KB and cuts TTFT by ~1-2 s on vision APIs).
+                img = Image.frombytes("RGB", sct_img.size, sct_img.rgb)
+                if img.width > max_width:
+                    ratio = max_width / img.width
+                    new_size = (max_width, int(img.height * ratio))
+                    img = img.resize(new_size, Image.LANCZOS)
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+                logger.debug(f"Screenshot compressed: {len(buf.getvalue())} bytes "
+                             f"({img.width}x{img.height} JPEG q{jpeg_quality})")
+                return buf.getvalue()
+            else:
+                # PIL not installed — fall back to raw PNG
+                return mss.tools.to_png(sct_img.rgb, sct_img.size)
 
 
 class HotkeyListener:

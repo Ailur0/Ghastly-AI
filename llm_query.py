@@ -78,10 +78,10 @@ ANSWER_STYLE_RULES = {
 }
 
 ANSWER_STYLE_TOKENS = {
-    "Balanced": 250,
-    "Snippet only": 200,
-    "Text only": 220,
-    "Full walkthrough": 700,
+    "Balanced": 1024,
+    "Snippet only": 800,
+    "Text only": 900,
+    "Full walkthrough": 2048,
 }
 
 
@@ -163,14 +163,14 @@ def _strip_fences(chunk: str, pending: str):
 
 def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
     """
-    Shared NDJSON streaming logic for Ollama /api/chat, used by both the
-    text-only and vision-capable query functions.
+    Shared OpenAI-compatible SSE streaming logic for Groq /chat/completions,
+    used by both the text-only and vision-capable query functions.
 
-    Ollama stream format (NDJSON):
-        {"model":"glm-5.2","message":{"role":"assistant","content":"Hello","thinking":""},"done":false}
-        {"model":"glm-5.2","message":{"role":"assistant","content":"","thinking":""},"done":true,"done_reason":"stop"}
+    Groq/OpenAI SSE stream format:
+        data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+        data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+        data: [DONE]
 
-    We only yield content tokens (skip thinking tokens).
     Final yield is a dict with _meta containing latency info.
     """
     start_time = time.time()
@@ -195,13 +195,24 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
             if not line:
                 continue
 
+            decoded = line.decode("utf-8")
+            if not decoded.startswith("data: "):
+                continue
+
+            data_str = decoded[len("data: "):]
+            if data_str.strip() == "[DONE]":
+                break
+
             try:
-                data = json.loads(line.decode("utf-8"))
+                data = json.loads(data_str)
             except json.JSONDecodeError:
                 continue
 
-            msg = data.get("message", {})
-            content = msg.get("content", "")
+            choices = data.get("choices", [])
+            if not choices:
+                continue
+
+            content = choices[0].get("delta", {}).get("content", "")
 
             if content:
                 if first_token_time is None:
@@ -215,7 +226,7 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
                     token_count += 1
                     yield clean
 
-            if data.get("done", False):
+            if choices[0].get("finish_reason") is not None:
                 break
 
         # Flush whatever was held back waiting to see if it was a fence.
@@ -235,7 +246,7 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
             msg = ("[No answer came back — the model returned only reasoning "
                    "tokens. Try a shorter answer style or a different model.]")
             logger.error(f"Empty completion from {payload.get('model')} "
-                         f"(num_predict={payload.get('options', {}).get('num_predict')})")
+                         f"(max_tokens={payload.get('max_tokens')})")
             yield msg
             yield {"_meta": {"total_ms": total_ms, "ttft_ms": 0, "token_count": 0,
                              "full_text": msg, "error": "empty completion"}}
@@ -282,10 +293,10 @@ def query_ollama_stream(
     base_url: str = OLLAMA_BASE_URL,
     max_tokens: int = 250
 ) -> Generator:
-    """Stream response from Ollama cloud /api/chat endpoint (text-only)."""
+    """Stream response from Groq /chat/completions endpoint (OpenAI-compatible, text-only)."""
     prompt = build_prompt(question, context, state)
 
-    url = f"{base_url}/chat"
+    url = f"{base_url}/chat/completions"
 
     payload = {
         "model": model,
@@ -294,11 +305,8 @@ def query_ollama_stream(
             {"role": "user", "content": prompt}
         ],
         "stream": True,
-        "think": False,
-        "options": {
-            "num_predict": max_tokens,
-            "temperature": 0.85,
-        }
+        "max_tokens": max_tokens,
+        "temperature": 0.85,
     }
 
     headers = {
@@ -318,35 +326,38 @@ def query_ollama_vision_stream(
     api_key: str = OLLAMA_API_KEY,
     model: str = OLLAMA_VISION_MODEL,
     base_url: str = OLLAMA_BASE_URL,
-    max_tokens: int = 250
+    max_tokens: int = 250,
+    mime: str = "image/png",
 ) -> Generator:
     """
-    Stream a screen-capture answer from Ollama /api/chat with an image attached.
+    Stream a screen-capture answer from Groq /chat/completions with an image.
 
-    Ollama takes images as a list of bare base64 strings on the message (no
-    "data:image/png;base64," prefix, unlike OpenRouter), and streams back the
-    same NDJSON as a text chat — so this shares _stream_chat with the text path.
+    Groq uses the OpenAI-compatible image_url content block format with a
+    data URI. Pass mime="image/jpeg" when sending a JPEG-compressed screenshot
+    (the default capture path), or "image/png" as a fallback.
 
     `prompt` is the fixed SCREEN_CAPTURE_PROMPT rather than a transcribed
-    question. Only a vision-capable model works here; the nemotron models on
-    the same key reject images with a 400.
+    question. Only a vision-capable model works here.
     """
     full_prompt = build_prompt(prompt, context, state)
 
-    url = f"{base_url}/chat"
+    url = f"{base_url}/chat/completions"
 
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": full_prompt, "images": [image_b64]}
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": full_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}}
+                ]
+            }
         ],
         "stream": True,
-        "think": False,
-        "options": {
-            "num_predict": max_tokens,
-            "temperature": 0.85,
-        }
+        "max_tokens": max_tokens,
+        "temperature": 0.85,
     }
 
     headers = {
@@ -521,10 +532,10 @@ def query_ollama(
     base_url: str = OLLAMA_BASE_URL,
     max_tokens: int = 250
 ) -> dict:
-    """Non-streaming query. Returns full response at once."""
+    """Non-streaming query via Groq /chat/completions (OpenAI-compatible). Returns full response at once."""
     prompt = build_prompt(question, context, state)
-    url = f"{base_url}/chat"
-    
+    url = f"{base_url}/chat/completions"
+
     payload = {
         "model": model,
         "messages": [
@@ -532,27 +543,24 @@ def query_ollama(
             {"role": "user", "content": prompt}
         ],
         "stream": False,
-        "think": False,
-        "options": {
-            "num_predict": max_tokens,
-            "temperature": 0.85,
-        }
+        "max_tokens": max_tokens,
+        "temperature": 0.85,
     }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
         "User-Agent": "GhastlyAI/1.0",
     }
-    
+
     start_time = time.time()
-    
+
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         total_ms = (time.time() - start_time) * 1000
-        
+
         if response.status_code == 200:
             result = response.json()
-            text = result.get("message", {}).get("content", "")
+            text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             logger.info(f"LLM (non-stream): {total_ms:.0f}ms")
             return {
                 "text": text,
