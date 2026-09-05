@@ -218,9 +218,7 @@ class GhostInterviewAgent:
         """Answer the last question again."""
         if not self._last_question:
             self.overlay.set_status("ready")
-            self.overlay.append_html(
-                '<div style="color:#334155;font-size:12px;padding-left:4px;">'
-                'Nothing to retry yet.</div>')
+            self.overlay.notice("Nothing to retry yet.")
             logger.info("Retry pressed with no previous question")
             return
         logger.info(f"Retrying: {self._last_question[:80]}")
@@ -337,9 +335,7 @@ class GhostInterviewAgent:
 
     def notify(self, message: str):
         """A small grey line in the answer panel."""
-        self.overlay.append_html(
-            '<div style="color:#334155;font-size:12px;padding-left:4px;'
-            f'margin:6px 0;">{message}</div>')
+        self.overlay.notice(message)
 
     def restart_audio(self, device_id: str):
         """Point capture at a new device. The queue survives the swap, so the

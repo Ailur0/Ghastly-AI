@@ -1,12 +1,13 @@
 """
-ghost_overlay.py — Cluely-Inspired Frosted Glass Overlay
+ghost_overlay.py — Cluely-Inspired Dark Glass Overlay
 
-Bright, clean, cloud-native aesthetic with:
-  - Frosted glass command bar (draggable, collapsible)
-  - Sun/moon icon toggles opacity (opaque / translucent)
-  - Animated status pill (Ready / Listening / Transcribing / Answering / Error)
-  - Scrollable answer panel with glass Q&A cards
-  - Sky-blue accent color throughout
+Near-black translucent surfaces, a hairline of light for every edge, and
+almost no colour until something needs attention:
+  - Pill-shaped command bar (draggable, collapsible) with monochrome glyphs
+  - The headline hotkey shown as a chip, the rest behind the info button
+  - Status pill reduced to a dot and a word
+  - Scrollable answer panel; questions get an accented card, answers do not
+  - One palette in class T — restyle there, not in twenty stylesheets
 
 The cursor is pinned to a plain arrow over the entire overlay — hovering
 buttons, dragging the bar, and the text panel all keep the default shape,
@@ -33,6 +34,41 @@ WDA_NONE = 0x00000000
 GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x00000020
 
+# ════════════════════════════════════════════════════════════════
+#  Theme — one palette, referenced everywhere
+# ════════════════════════════════════════════════════════════════
+# Dark glass, the way Cluely does it: a near-black translucent slab, a
+# hairline of light for the edge, white text at two or three weights, and
+# almost no colour until something needs attention. Every surface in this
+# file pulls from here, so a restyle is one block rather than a hunt through
+# twenty stylesheets.
+class T:
+    BG          = "rgba(17, 17, 20, 0.86)"      # bar and panel fill
+    BG_RAISED   = "rgba(255, 255, 255, 0.06)"   # inputs, chips
+    BORDER      = "rgba(255, 255, 255, 0.10)"   # hairline edge
+    BORDER_HI   = "rgba(255, 255, 255, 0.20)"   # focus / hover edge
+    HOVER       = "rgba(255, 255, 255, 0.09)"   # button hover fill
+    TEXT        = "#F4F4F5"                     # primary
+    TEXT_DIM    = "#A1A1AA"                     # secondary
+    TEXT_MUTE   = "#71717A"                     # captions, hints
+    ACCENT      = "#A5B4FC"                     # the one colour, used sparingly
+    ACCENT_SOFT = "rgba(165, 180, 252, 0.14)"
+    DANGER      = "#F87171"
+    DANGER_SOFT = "rgba(248, 113, 113, 0.14)"
+    SELECT      = "rgba(165, 180, 252, 0.30)"
+    FONT        = "'Inter', 'Segoe UI', system-ui, sans-serif"
+    RADIUS      = 14                            # panel corner
+
+
+def format_combo(combo: str) -> str:
+    """
+    ctrl+shift+h -> Ctrl+Shift+H, for anything a person reads.
+
+    The stored value stays lowercase because that is what the keyboard
+    library registers; this is presentation only.
+    """
+    return "+".join(part.capitalize() for part in combo.split("+"))
+
 # ── PyQt5 imports ──
 try:
     from PyQt5.QtWidgets import (
@@ -44,7 +80,8 @@ try:
     from PyQt5.QtCore import QUrl, QStandardPaths
     from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent
     from PyQt5.QtGui import (
-        QColor, QTextCursor, QCursor, QPainter, QPen, QBrush, QKeySequence
+        QColor, QTextCursor, QCursor, QPainter, QPen, QBrush, QKeySequence,
+        QTextBlockFormat, QTextCharFormat
     )
     HAS_PYQT = True
 except ImportError:
@@ -232,11 +269,11 @@ if HAS_PYQT:
             p = QPainter(self)
             p.setRenderHint(QPainter.Antialiasing)
             box = self.rect().adjusted(1, 1, -2, -2)
-            p.setPen(QPen(QColor(2, 132, 199, 220), 1.4))
-            p.setBrush(QBrush(QColor(255, 255, 255, 235)))
+            p.setPen(QPen(QColor(255, 255, 255, 46), 1.0))
+            p.setBrush(QBrush(QColor(24, 24, 27, 225)))
             p.drawRoundedRect(box, 3, 3)
             # tiny cross inside, so it reads as a handle and not a bullet
-            p.setPen(QPen(QColor(2, 132, 199, 170), 1.2))
+            p.setPen(QPen(QColor(255, 255, 255, 120), 1.2))
             c = box.center()
             p.drawLine(c.x() - 2, c.y(), c.x() + 2, c.y())
             p.drawLine(c.x(), c.y() - 2, c.x(), c.y() + 2)
@@ -283,7 +320,7 @@ if HAS_PYQT:
 
     class HotkeyButton(QPushButton):
         def __init__(self, key_name, current_hotkey, on_changed, parent=None):
-            super().__init__(current_hotkey, parent)
+            super().__init__(format_combo(current_hotkey), parent)
             self.key_name = key_name
             self.current_hotkey = current_hotkey
             self.on_changed = on_changed
@@ -291,9 +328,9 @@ if HAS_PYQT:
             self.first_press = None
             self.setStyleSheet("""
                 QPushButton {
-                    background: rgba(2,132,199,0.10);
-                    color: #0F172A;
-                    border: 1px solid rgba(2,132,199,0.35);
+                    background: rgba(165,180,252,0.12);
+                    color: #F4F4F5;
+                    border: 1px solid rgba(165,180,252,0.35);
                     border-radius: 7px;
                     padding: 6px 12px;
                     font-family: 'Segoe UI', sans-serif;
@@ -301,8 +338,8 @@ if HAS_PYQT:
                     font-weight: 600;
                     text-align: center;
                 }
-                QPushButton:hover  { background: rgba(2,132,199,0.20); }
-                QPushButton:focus  { border: 1px solid rgba(2,132,199,0.80); background: rgba(2,132,199,0.15); }
+                QPushButton:hover  { background: rgba(165,180,252,0.22); }
+                QPushButton:focus  { border: 1px solid rgba(165,180,252,0.80); background: rgba(165,180,252,0.16); }
             """)
             self.setCursor(Qt.ArrowCursor)
 
@@ -318,7 +355,7 @@ if HAS_PYQT:
         def focusOutEvent(self, event):
             if self.listening:
                 self.listening = False
-                self.setText(self.current_hotkey)
+                self.setText(format_combo(self.current_hotkey))
             super().focusOutEvent(event)
 
         def keyPressEvent(self, event):
@@ -332,7 +369,7 @@ if HAS_PYQT:
             
             if key == Qt.Key_Escape:
                 self.listening = False
-                self.setText(self.current_hotkey)
+                self.setText(format_combo(self.current_hotkey))
                 return
 
             mods = event.modifiers()
@@ -353,7 +390,7 @@ if HAS_PYQT:
 
             if self.first_press is None:
                 self.first_press = seq
-                self.setText(f"Press {seq} again to confirm...")
+                self.setText(f"Press {format_combo(seq)} again…")
             else:
                 if self.first_press == seq:
                     # The owner registers it and says whether it took; only
@@ -365,7 +402,7 @@ if HAS_PYQT:
                         accepted = True
                     if accepted:
                         self.current_hotkey = seq
-                self.setText(self.current_hotkey)
+                self.setText(format_combo(self.current_hotkey))
                 self.first_press = None
                 self.listening = False
 
@@ -381,22 +418,22 @@ if HAS_PYQT:
         is not our window, so we cannot hide it from capture.
         """
 
-        LABEL_CSS = ("color:#0369A1;font-family:'Segoe UI',sans-serif;"
+        LABEL_CSS = ("color:#A5B4FC;font-family:'Segoe UI',sans-serif;"
                      "font-size:11px;font-weight:700;letter-spacing:0.6px;"
                      "background:transparent;border:none;")
         BTN_CSS = """
             QPushButton {
-                background: rgba(2,132,199,0.10);
-                color: #0F172A;
-                border: 1px solid rgba(2,132,199,0.35);
+                background: rgba(165,180,252,0.12);
+                color: #F4F4F5;
+                border: 1px solid rgba(165,180,252,0.35);
                 border-radius: 7px;
                 padding: 6px 12px;
                 font-family: 'Segoe UI', sans-serif;
                 font-size: 12px;
                 font-weight: 600;
             }
-            QPushButton:hover  { background: rgba(2,132,199,0.20); }
-            QPushButton:disabled { color:#94A3B8; border-color:rgba(148,163,184,0.4); }
+            QPushButton:hover  { background: rgba(165,180,252,0.22); }
+            QPushButton:disabled { color:#71717A; border-color:rgba(255,255,255,0.10); }
         """
 
         def __init__(self, owner, on_changed, parent=None):
@@ -417,8 +454,8 @@ if HAS_PYQT:
             card = QFrame()
             card.setStyleSheet("""
                 QFrame {
-                    background-color: rgba(255,255,255,0.97);
-                    border: 1.5px solid rgba(203,213,225,0.9);
+                    background-color: rgba(20,20,23,0.97);
+                    border: 1.5px solid rgba(255,255,255,0.10);
                     border-radius: 14px;
                 }
             """)
@@ -440,16 +477,16 @@ if HAS_PYQT:
             hl = QHBoxLayout(header)
             hl.setContentsMargins(0, 0, 0, 0)
             title = QLabel("Setup")
-            title.setStyleSheet("color:#0F172A;font-family:'Segoe UI',sans-serif;"
+            title.setStyleSheet("color:#F4F4F5;font-family:'Segoe UI',sans-serif;"
                                 "font-size:14px;font-weight:700;background:transparent;border:none;")
             hl.addWidget(title)
             hl.addStretch()
             close_btn = QPushButton("✕")
             close_btn.setFixedSize(20, 20)
             close_btn.setStyleSheet("""
-                QPushButton { background:transparent;border:none;color:#64748B;
+                QPushButton { background:transparent;border:none;color:#A1A1AA;
                               font-size:13px;font-weight:700;border-radius:5px; }
-                QPushButton:hover { background:rgba(239,68,68,0.15);color:#DC2626; }
+                QPushButton:hover { background:rgba(248,113,113,0.16);color:#F87171; }
             """)
             close_btn.clicked.connect(self.close)
             hl.addWidget(close_btn)
@@ -464,16 +501,16 @@ if HAS_PYQT:
             self.file_list.setFixedHeight(104)
             self.file_list.setStyleSheet("""
                 QListWidget {
-                    background: rgba(241,245,249,0.85);
-                    border: 1px solid rgba(203,213,225,0.9);
+                    background: rgba(255,255,255,0.06);
+                    border: 1px solid rgba(255,255,255,0.10);
                     border-radius: 8px;
                     font-family: 'Segoe UI', sans-serif;
                     font-size: 12px;
-                    color: #0F172A;
+                    color: #F4F4F5;
                     padding: 4px;
                 }
                 QListWidget::item { padding: 3px 4px; border-radius: 4px; }
-                QListWidget::item:selected { background: rgba(2,132,199,0.18); color:#0F172A; }
+                QListWidget::item:selected { background: rgba(165,180,252,0.20); color:#F4F4F5; }
             """)
             lay.addWidget(self.file_list)
 
@@ -493,7 +530,7 @@ if HAS_PYQT:
 
             self.status = QLabel("")
             self.status.setWordWrap(True)
-            self.status.setStyleSheet("color:#334155;font-family:'Segoe UI',sans-serif;"
+            self.status.setStyleSheet("color:#A1A1AA;font-family:'Segoe UI',sans-serif;"
                                       "font-size:11px;background:transparent;border:none;")
             lay.addWidget(self.status)
 
@@ -508,21 +545,21 @@ if HAS_PYQT:
                 self.lang_combo.setCurrentText(current_language)
             self.lang_combo.setStyleSheet("""
                 QComboBox {
-                    background: rgba(241,245,249,0.85);
-                    border: 1px solid rgba(203,213,225,0.9);
+                    background: rgba(255,255,255,0.06);
+                    border: 1px solid rgba(255,255,255,0.10);
                     border-radius: 8px;
                     padding: 5px 8px;
                     font-family: 'Segoe UI', sans-serif;
                     font-size: 12px;
-                    color: #0F172A;
+                    color: #F4F4F5;
                 }
                 QComboBox::drop-down { border: none; width: 18px; }
                 QComboBox QAbstractItemView {
-                    background: #FFFFFF;
-                    border: 1px solid rgba(203,213,225,0.9);
-                    selection-background-color: rgba(2,132,199,0.18);
-                    selection-color: #0F172A;
-                    color: #0F172A;
+                    background: #18181B;
+                    border: 1px solid rgba(255,255,255,0.10);
+                    selection-background-color: rgba(165,180,252,0.20);
+                    selection-color: #F4F4F5;
+                    color: #F4F4F5;
                     outline: none;
                 }
             """)
@@ -530,7 +567,7 @@ if HAS_PYQT:
             lay.addWidget(self.lang_combo)
 
             hint = QLabel("Auto follows whatever the question implies.")
-            hint.setStyleSheet("color:#64748B;font-family:'Segoe UI',sans-serif;"
+            hint.setStyleSheet("color:#A1A1AA;font-family:'Segoe UI',sans-serif;"
                                "font-size:11px;background:transparent;border:none;")
             lay.addWidget(hint)
 
@@ -549,7 +586,7 @@ if HAS_PYQT:
 
             self.style_hint = QLabel("")
             self.style_hint.setWordWrap(True)
-            self.style_hint.setStyleSheet("color:#64748B;font-family:'Segoe UI',sans-serif;"
+            self.style_hint.setStyleSheet("color:#A1A1AA;font-family:'Segoe UI',sans-serif;"
                                           "font-size:11px;background:transparent;border:none;")
             lay.addWidget(self.style_hint)
             self._describe_style(self.style_combo.currentText())
@@ -572,7 +609,7 @@ if HAS_PYQT:
             audio_hint = QLabel("Pick the loopback device carrying the "
                                 "interviewer's voice. Changing it restarts capture.")
             audio_hint.setWordWrap(True)
-            audio_hint.setStyleSheet("color:#64748B;font-family:'Segoe UI',sans-serif;"
+            audio_hint.setStyleSheet("color:#A1A1AA;font-family:'Segoe UI',sans-serif;"
                                      "font-size:11px;background:transparent;border:none;")
             lay.addWidget(audio_hint)
 
@@ -585,7 +622,7 @@ if HAS_PYQT:
                 for label_text, current_hotkey in owner.hotkeys:
                     row = QHBoxLayout()
                     lbl = QLabel(label_text)
-                    lbl.setStyleSheet("color:#0F172A;font-family:'Segoe UI',sans-serif;"
+                    lbl.setStyleSheet("color:#F4F4F5;font-family:'Segoe UI',sans-serif;"
                                       "font-size:12px;background:transparent;border:none;")
                     
                     btn = HotkeyButton(label_text, current_hotkey, self._hotkey_changed)
@@ -772,13 +809,15 @@ if HAS_PYQT:
 # ════════════════════════════════════════════════════════════════
 #  Status definitions
 # ════════════════════════════════════════════════════════════════
+# Text, foreground, fill, border. A dot instead of an emoji: the state reads
+# at a glance without another piece of colour competing with the answer.
 STATUS_MAP = {
-    "ready":        ("⚡ Ready",        "#0EA5E9", "rgba(14,165,233,0.12)", "rgba(14,165,233,0.28)"),
-    "listening":    ("🎤 Listening",    "#0EA5E9", "rgba(14,165,233,0.12)", "rgba(14,165,233,0.28)"),
-    "transcribing": ("✨ Transcribing", "#0EA5E9", "rgba(14,165,233,0.12)", "rgba(14,165,233,0.28)"),
-    "answering":    ("⚡ Answering",    "#0EA5E9", "rgba(14,165,233,0.12)", "rgba(14,165,233,0.28)"),
-    "error":        ("⚠ Error",        "#EF4444", "rgba(239,68,68,0.12)",  "rgba(239,68,68,0.28)"),
-    "offline":      ("🔴 Offline",     "#EF4444", "rgba(239,68,68,0.12)",  "rgba(239,68,68,0.28)"),
+    "ready":        ("● Ready",        T.TEXT_MUTE, "rgba(255,255,255,0.05)", T.BORDER),
+    "listening":    ("● Listening",    T.ACCENT,    T.ACCENT_SOFT,            "rgba(165,180,252,0.28)"),
+    "transcribing": ("● Transcribing", T.ACCENT,    T.ACCENT_SOFT,            "rgba(165,180,252,0.28)"),
+    "answering":    ("● Answering",    T.ACCENT,    T.ACCENT_SOFT,            "rgba(165,180,252,0.28)"),
+    "error":        ("● Error",        T.DANGER,    T.DANGER_SOFT,            "rgba(248,113,113,0.30)"),
+    "offline":      ("● Offline",      T.DANGER,    T.DANGER_SOFT,            "rgba(248,113,113,0.30)"),
 }
 
 
@@ -852,6 +891,7 @@ class GhostOverlay:
         self.status_pill = None
         self.opacity_btn = None
         self.info_btn = None
+        self.ask_hint = None
         self.title_label = None
         self._scramble_timer = None
 
@@ -969,112 +1009,82 @@ class GhostOverlay:
         # ═══ COMMAND BAR ═══
         self.bar = DraggableWidget()
         self.bar.setFixedHeight(self.BAR_H)
-        self.bar.setStyleSheet("""
-            QWidget {{
-                background-color: rgba(255, 255, 255, 0.78);
-                border: 1px solid rgba(255, 255, 255, 0.35);
-                border-radius: 12px;
+        # A bare QWidget ignores a stylesheet background unless it is told to
+        # draw one, and the id selector keeps the fill off every child.
+        self.bar.setObjectName("commandBar")
+        self.bar.setAttribute(Qt.WA_StyledBackground, True)
+        self.bar.setStyleSheet(f"""
+            #commandBar {{
+                background-color: {T.BG};
+                border: 1px solid {T.BORDER};
+                border-radius: {self.BAR_H // 2}px;
             }}
         """)
 
         bar_shadow = QGraphicsDropShadowEffect()
-        bar_shadow.setBlurRadius(32)
-        bar_shadow.setColor(QColor(0, 0, 0, 30))
-        bar_shadow.setOffset(0, 8)
+        bar_shadow.setBlurRadius(40)
+        bar_shadow.setColor(QColor(0, 0, 0, 130))
+        bar_shadow.setOffset(0, 10)
         self.bar.setGraphicsEffect(bar_shadow)
 
         bar_layout = QHBoxLayout(self.bar)
         bar_layout.setContentsMargins(10, 0, 8, 0)
         bar_layout.setSpacing(8)
 
-        # Opacity toggle button (sun = opaque, moon = translucent)
-        self.opacity_btn = QPushButton("☀️")
-        self.opacity_btn.setFixedSize(28, 28)
-        self.opacity_btn.setToolTip("Opaque — click to make translucent")
-        self.opacity_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                border-radius: 6px;
-                font-size: 15px;
-                padding: 0px;
-            }
-            QPushButton:hover {
-                background: rgba(14, 165, 233, 0.12);
-            }
-        """)
-        self.opacity_btn.clicked.connect(self._toggle_opacity)
-        bar_layout.addWidget(self.opacity_btn)
-
-        # Info button (hover tooltip lists hotkeys)
-        self.info_btn = QPushButton("ℹ️")
-        self.info_btn.setFixedSize(28, 28)
-        self.info_btn.setToolTip(self._build_hotkeys_tooltip())
-        self.info_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                border-radius: 6px;
-                font-size: 15px;
-                padding: 0px;
-            }
-            QPushButton:hover {
-                background: rgba(14, 165, 233, 0.12);
-            }
-        """)
-        bar_layout.addWidget(self.info_btn)
-
-        # Setup button (documents + answer language)
-        self.setup_btn = QPushButton("📎")
-        self.setup_btn.setFixedSize(28, 28)
-        self.setup_btn.setToolTip("Documents & answer language")
-        self.setup_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                border-radius: 6px;
-                font-size: 15px;
-                padding: 0px;
-            }
-            QPushButton:hover {
-                background: rgba(14, 165, 233, 0.12);
-            }
-        """)
-        self.setup_btn.clicked.connect(self._open_setup)
-        bar_layout.addWidget(self.setup_btn)
-
-        # Retry button — re-answers the last question
-        self.retry_btn = QPushButton("↻")
-        self.retry_btn.setFixedSize(28, 28)
-        self.retry_btn.setToolTip("Answer the last question again")
-        self.retry_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                border-radius: 6px;
-                color: #0F172A;
-                font-size: 15px;
-                font-weight: 700;
-                padding: 0px;
-            }
-            QPushButton:hover { background: rgba(14, 165, 233, 0.12); }
-        """)
-        self.retry_btn.clicked.connect(self._on_retry_clicked)
-        bar_layout.addWidget(self.retry_btn)
-
-        # Title
-        self.title_label = QLabel("Ghastly AI")
-        self.title_label.setStyleSheet("""
-            color: #0F172A;
-            font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
-            font-size: 14px;
-            font-weight: 700;
+        # Wordmark first, the way Cluely leads with its name, then the tools.
+        self.title_label = QLabel("Ghastly")
+        self.title_label.setStyleSheet(f"""
+            color: {T.TEXT};
+            font-family: {T.FONT};
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.2px;
             background: transparent;
             border: none;
         """)
         bar_layout.addWidget(self.title_label)
 
+        bar_layout.addWidget(self._bar_divider())
+
+        # Opacity toggle (filled = opaque, hollow = translucent)
+        self.opacity_btn = self._bar_button(
+            "◐", "Opaque — click to make translucent", self._toggle_opacity)
+        bar_layout.addWidget(self.opacity_btn)
+
+        # Setup (documents + answer language)
+        self.setup_btn = self._bar_button(
+            "⚙", "Documents & answer language", self._open_setup)
+        bar_layout.addWidget(self.setup_btn)
+
+        # Retry — re-answers the last question
+        self.retry_btn = self._bar_button(
+            "↻", "Answer the last question again", self._on_retry_clicked)
+        bar_layout.addWidget(self.retry_btn)
+
+        # Info (hover tooltip lists hotkeys)
+        self.info_btn = self._bar_button("ⓘ", self._build_hotkeys_tooltip())
+        bar_layout.addWidget(self.info_btn)
+
         bar_layout.addStretch()
+
+        # The headline shortcut, shown the way Cluely shows them — the one
+        # hotkey worth knowing without opening anything.
+        self.ask_hint = QLabel(format_combo(config.GRAB_HOTKEY))
+        self.ask_hint.setToolTip("Answer what was just said")
+        self.ask_hint.setStyleSheet(f"""
+            QLabel {{
+                color: {T.TEXT_MUTE};
+                background: {T.BG_RAISED};
+                border: 1px solid {T.BORDER};
+                border-radius: 6px;
+                padding: 2px 7px;
+                font-family: {T.FONT};
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 0.3px;
+            }}
+        """)
+        bar_layout.addWidget(self.ask_hint)
 
         # Status pill
         self.status_pill = QLabel("⚡ Ready")
@@ -1083,25 +1093,11 @@ class GhostOverlay:
 
         bar_layout.addSpacing(6)
 
-        # Window controls
-        for color, hover, tip, handler in [
-            ("#FF5F57", "#FF3B30", "Close", self._on_close),
-        ]:
-            btn = QPushButton()
-            btn.setFixedSize(14, 14)
-            btn.setToolTip(tip)
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {color};
-                    border: none;
-                    border-radius: 7px;
-                }}
-                QPushButton:hover {{
-                    background-color: {hover};
-                }}
-            """)
-            btn.clicked.connect(handler)
-            bar_layout.addWidget(btn)
+        # Close — a quiet glyph rather than a traffic light, which is the one
+        # piece of chrome that always read as "some app is running here".
+        close_btn = self._bar_button("✕", "Close", self._on_close,
+                                     hover_bg=T.DANGER_SOFT, hover_fg=T.DANGER)
+        bar_layout.addWidget(close_btn)
 
         # Click on bar toggles expand/collapse
         self.bar.mouseDoubleClickEvent = lambda e: self._toggle_panel()
@@ -1110,18 +1106,19 @@ class GhostOverlay:
 
         # ═══ ANSWER PANEL ═══
         self.panel = QFrame()
-        self.panel.setStyleSheet("""
-            QFrame {
-                background-color: rgba(255, 255, 255, 0.95);
-                border: 1.5px solid rgba(203, 213, 225, 0.85);
-                border-radius: 14px;
-            }
+        self.panel.setObjectName("answerPanel")
+        self.panel.setStyleSheet(f"""
+            #answerPanel {{
+                background-color: {T.BG};
+                border: 1px solid {T.BORDER};
+                border-radius: {T.RADIUS}px;
+            }}
         """)
 
         panel_shadow = QGraphicsDropShadowEffect()
-        panel_shadow.setBlurRadius(32)
-        panel_shadow.setColor(QColor(0, 0, 0, 45))
-        panel_shadow.setOffset(0, 8)
+        panel_shadow.setBlurRadius(44)
+        panel_shadow.setColor(QColor(0, 0, 0, 150))
+        panel_shadow.setOffset(0, 12)
         self.panel.setGraphicsEffect(panel_shadow)
 
         panel_layout = QVBoxLayout(self.panel)
@@ -1130,34 +1127,34 @@ class GhostOverlay:
         self.text_widget = QTextEdit()
         self.text_widget.setReadOnly(True)
         self.text_widget.viewport().setCursor(QCursor(Qt.ArrowCursor))
-        self.text_widget.setStyleSheet("""
-            QTextEdit {
+        self.text_widget.setStyleSheet(f"""
+            QTextEdit {{
                 background: transparent;
-                color: #020617;
-                font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
-                font-size: 16px;
-                font-weight: 500;
-                line-height: 1.6;
+                color: {T.TEXT};
+                font-family: {T.FONT};
+                font-size: 15px;
+                font-weight: 400;
+                line-height: 1.65;
                 border: none;
-                selection-background-color: rgba(14, 165, 233, 0.35);
-            }
-            QScrollBar:vertical {
+                selection-background-color: {T.SELECT};
+            }}
+            QScrollBar:vertical {{
                 border: none;
                 background: transparent;
                 width: 6px;
                 border-radius: 3px;
-            }
-            QScrollBar::handle:vertical {
-                background: rgba(0, 0, 0, 0.20);
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(255, 255, 255, 0.16);
                 min-height: 30px;
                 border-radius: 3px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: rgba(0, 0, 0, 0.40);
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: rgba(255, 255, 255, 0.32);
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0px;
-            }
+            }}
         """)
         panel_layout.addWidget(self.text_widget)
 
@@ -1166,20 +1163,20 @@ class GhostOverlay:
         # loopback device. When that fails — wrong device, muted call, a term
         # Whisper mangles — this is the way back in.
         self.ask_input = QLineEdit()
-        self.ask_input.setPlaceholderText("Type a question and press Enter…")
-        self.ask_input.setFixedHeight(30)
-        self.ask_input.setStyleSheet("""
-            QLineEdit {
-                background: rgba(241, 245, 249, 0.9);
-                border: 1px solid rgba(203, 213, 225, 0.9);
-                border-radius: 8px;
-                padding: 4px 10px;
-                font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
+        self.ask_input.setPlaceholderText("Ask anything…")
+        self.ask_input.setFixedHeight(34)
+        self.ask_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: {T.BG_RAISED};
+                border: 1px solid {T.BORDER};
+                border-radius: 10px;
+                padding: 5px 12px;
+                font-family: {T.FONT};
                 font-size: 13px;
-                color: #0F172A;
-                selection-background-color: rgba(14, 165, 233, 0.35);
-            }
-            QLineEdit:focus { border: 1px solid rgba(2, 132, 199, 0.65); }
+                color: {T.TEXT};
+                selection-background-color: {T.SELECT};
+            }}
+            QLineEdit:focus {{ border: 1px solid {T.BORDER_HI}; }}
         """)
         # Qt gives a line edit an I-beam; pin it like the answer panel so no
         # cursor shape ever hints that something is here.
@@ -1220,12 +1217,12 @@ class GhostOverlay:
                       "Windows refused it — build 19041 (Windows 10 2004) or "
                       "newer is required")
             self.append_html(
-                '<div style="background:rgba(220,38,38,0.10);'
-                'border-left:4px solid #DC2626;border-radius:8px;'
+                f'<div style="background:{T.DANGER_SOFT};'
+                f'border-left:2px solid {T.DANGER};border-radius:6px;'
                 'padding:10px 14px;margin:10px 0;">'
-                '<span style="color:#DC2626;font-size:12px;font-weight:700;">'
-                'VISIBLE TO SCREEN CAPTURE</span><br/>'
-                '<span style="color:#0F172A;font-size:13px;">'
+                f'<span style="color:{T.DANGER};font-size:10px;font-weight:700;'
+                'letter-spacing:0.8px;">VISIBLE TO SCREEN CAPTURE</span><br/>'
+                f'<span style="color:{T.TEXT};font-size:13px;">'
                 f'This overlay is NOT hidden — {reason}. '
                 'Anyone you share your screen with will see it.</span></div>')
 
@@ -1286,11 +1283,12 @@ class GhostOverlay:
                 color: {color};
                 background: {bg};
                 border: 1px solid {border_c};
-                border-radius: 10px;
-                padding: 3px 10px;
-                font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-                font-size: 11px;
+                border-radius: 9px;
+                padding: 2px 9px;
+                font-family: {T.FONT};
+                font-size: 10px;
                 font-weight: 600;
+                letter-spacing: 0.2px;
             }}
         """)
 
@@ -1345,7 +1343,7 @@ class GhostOverlay:
             logger.exception("Could not open the setup panel")
             self._setup_dialog = None
             self.append_html(
-                '<div style="color:#DC2626;font-size:12px;padding-left:4px;">'
+                f'<div style="color:{T.DANGER};font-size:12px;padding-left:4px;">'
                 f'Setup panel unavailable: {e}</div>')
 
     def _build_and_show_setup(self):
@@ -1433,6 +1431,42 @@ class GhostOverlay:
             self.window.setWindowOpacity(self.OPACITY_TRANSLUCENT)
             logger.info("Overlay opacity: translucent")
 
+    # ────────────────────────────────────────────────
+    #  Command bar pieces
+    # ────────────────────────────────────────────────
+    def _bar_button(self, glyph: str, tooltip: str, handler=None,
+                    hover_bg=None, hover_fg=None):
+        """One monochrome glyph button — the bar's only button shape."""
+        btn = QPushButton(glyph)
+        btn.setFixedSize(26, 26)
+        btn.setToolTip(tooltip)
+        btn.setCursor(QCursor(Qt.ArrowCursor))
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: none;
+                border-radius: 7px;
+                color: {T.TEXT_DIM};
+                font-family: {T.FONT};
+                font-size: 14px;
+                padding: 0px;
+            }}
+            QPushButton:hover   {{ background: {hover_bg or T.HOVER};
+                                   color: {hover_fg or T.TEXT}; }}
+            QPushButton:pressed {{ background: {T.BORDER}; }}
+        """)
+        if handler is not None:
+            btn.clicked.connect(handler)
+        return btn
+
+    def _bar_divider(self):
+        """Hairline between the wordmark and the tools."""
+        line = QWidget()
+        line.setFixedSize(1, 16)
+        line.setAttribute(Qt.WA_StyledBackground, True)
+        line.setStyleSheet(f"background: {T.BORDER}; border: none;")
+        return line
+
     def set_hotkey(self, label: str, combo: str):
         """
         Record a rebound hotkey and rebuild the info tooltip, which is
@@ -1445,6 +1479,9 @@ class GhostOverlay:
                 break
         if self.info_btn is not None:
             self.info_btn.setToolTip(self._build_hotkeys_tooltip())
+        # The bar shows this one combo in full, so it has to move too.
+        if label == "Answer what was just said" and self.ask_hint is not None:
+            self.ask_hint.setText(format_combo(combo))
 
     def _build_hotkeys_tooltip(self) -> str:
         """Build the info button's tooltip text listing all configured hotkeys."""
@@ -1452,8 +1489,7 @@ class GhostOverlay:
             return "No hotkeys configured"
         lines = ["Hotkeys:"]
         for label, combo in self.hotkeys:
-            formatted = "+".join(part.capitalize() for part in combo.split("+"))
-            lines.append(f"{label} — {formatted}")
+            lines.append(f"{label} — {format_combo(combo)}")
         return "\n".join(lines)
 
     def _on_close(self):
@@ -1485,7 +1521,15 @@ class GhostOverlay:
         at_bottom = sb.value() >= sb.maximum() - 50
         c = self.text_widget.textCursor()
         c.movePosition(QTextCursor.End)
+        # A block is shared formatting, so an HTML card dropped into the tail
+        # of streamed answer text takes that text's format with it — and the
+        # text streamed in afterwards would take the card's. Fence it on both
+        # sides with clean blocks.
+        if c.block().text().strip():
+            c.insertBlock(QTextBlockFormat(), QTextCharFormat())
         c.insertHtml(html)
+        c.insertBlock(QTextBlockFormat(), QTextCharFormat())
+        self.text_widget.setTextCursor(c)
         if at_bottom and self.auto_scroll:
             sb.setValue(sb.maximum())
 
@@ -1530,21 +1574,30 @@ class GhostOverlay:
         self._question_count += 1
         q_html = f"""
         <div style="
-            background: rgba(2, 132, 199, 0.08);
-            border-left: 4px solid #0284C7;
-            border-radius: 8px;
-            padding: 12px 16px;
+            background: {T.ACCENT_SOFT};
+            border-left: 2px solid {T.ACCENT};
+            border-radius: 6px;
+            padding: 10px 14px;
             margin-top: 14px;
-            margin-bottom: 8px;
+            margin-bottom: 10px;
         ">
-            <span style="color: #0369A1; font-size: 12px; font-weight: 700; letter-spacing: 0.5px;">QUESTION #{self._question_count}</span><br/>
-            <span style="color: #0F172A; font-size: 15px; font-weight: 600; line-height: 1.5;">{question}</span>
-        </div>
-        <div style="color: #0284C7; font-size: 14px; font-weight: 700; padding-left: 4px; margin-bottom: 4px;">
-            Answer
+            <span style="color: {T.ACCENT}; font-size: 10px; font-weight: 700; letter-spacing: 0.8px;">QUESTION {self._question_count}</span><br/>
+            <span style="color: {T.TEXT}; font-size: 14px; font-weight: 500; line-height: 1.5;">{question}</span>
         </div>
         """
         self.append_html(q_html)
+
+    def notice(self, message: str):
+        """
+        A quiet line in the answer panel — status, not answer.
+
+        Lives here so callers say what they mean and the palette stays in
+        one file; main.py used to spell out a slate colour that vanished the
+        moment the panel went dark.
+        """
+        self.append_html(
+            f'<div style="color:{T.TEXT_MUTE};font-size:12px;'
+            f'padding-left:4px;margin:6px 0;">{message}</div>')
 
     def stream_answer(self, text_chunk: str):
         """Append streaming answer text."""
@@ -1554,16 +1607,15 @@ class GhostOverlay:
         """Show latency footer."""
         info_html = f"""
         <div style="
-            color: #334155;
-            font-size: 12px;
-            font-weight: 600;
-            margin-top: 8px;
+            color: {T.TEXT_MUTE};
+            font-size: 11px;
+            font-weight: 500;
+            margin-top: 10px;
             margin-bottom: 12px;
             padding-left: 4px;
-            border-top: 1px solid rgba(203, 213, 225, 0.7);
             padding-top: 6px;
         ">
-            ⏱ {latency_ms:.0f}ms &middot; TTFT {ttft_ms:.0f}ms
+            {latency_ms:.0f}ms &middot; first token {ttft_ms:.0f}ms
         </div>
         """
         self.append_html(info_html)
