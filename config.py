@@ -202,24 +202,10 @@ OVERLAY_PANEL_WIDTH = 480     # answer panel width (expanded)
 OVERLAY_PANEL_HEIGHT = 380    # answer panel max height
 OVERLAY_POSITION = "top-center"
 
-# Cluely Color Palette (High-Contrast Clean Glass)
-OVERLAY_GLASS_BG = "rgba(255, 255, 255, 0.94)"
-OVERLAY_GLASS_BORDER = "rgba(255, 255, 255, 0.50)"
-OVERLAY_ACCENT = "#0284C7"           # deep sky-blue
-OVERLAY_ACCENT_HOVER = "#0369A1"
-OVERLAY_ACCENT_GLOW = "rgba(14, 165, 233, 0.35)"
-OVERLAY_TEXT_PRIMARY = "#020617"      # slate-950 (high contrast dark)
-OVERLAY_TEXT_SECONDARY = "#334155"    # slate-700 (dark readable gray)
-OVERLAY_TEXT_ANSWER = "#020617"       # slate-950 (high contrast text)
-OVERLAY_SUCCESS = "#16A34A"
-OVERLAY_ERROR = "#DC2626"
-OVERLAY_SHADOW = "0 8px 32px rgba(0, 0, 0, 0.18)"
-
-# Typography (Increased sizes for readability)
-OVERLAY_FONT_FAMILY = "Segoe UI"      # fallback: Inter, system-ui
-OVERLAY_FONT_SIZE = 16
-OVERLAY_FONT_SIZE_SMALL = 14
-OVERLAY_FONT_SIZE_META = 12
+# The overlay's colours and fonts live in `class T` at the top of
+# ghost_overlay.py, not here. A light-theme palette used to sit at this spot
+# and had not been read by anything since the dark theme landed — two sources
+# of truth, one of them fiction.
 
 # === Uploaded documents & answer language ===
 # Resumes and notes added from the overlay's setup panel land here (next to
