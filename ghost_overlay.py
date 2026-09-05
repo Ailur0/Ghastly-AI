@@ -19,6 +19,7 @@ On Windows:
 
 import sys
 import os
+import json
 import logging
 import ctypes
 import random
@@ -78,7 +79,7 @@ try:
         QFileDialog, QLineEdit, QFileIconProvider
     )
     from PyQt5.QtCore import QUrl, QStandardPaths
-    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent
+    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent, QRect
     from PyQt5.QtGui import (
         QColor, QTextCursor, QCursor, QPainter, QPen, QBrush, QKeySequence,
         QTextBlockFormat, QTextCharFormat
@@ -239,8 +240,15 @@ if HAS_PYQT:
                 self.window().move(event.globalPos() - self._drag_pos)
                 event.accept()
 
+        # Set by GhostOverlay so a finished drag can be remembered. A plain
+        # attribute rather than a signal: these widgets are constructed before
+        # the overlay has anything to connect to.
+        on_release = None
+
         def mouseReleaseEvent(self, event):
             self._drag_pos = None
+            if callable(self.on_release):
+                self.on_release()
             event.accept()
 
 
@@ -314,8 +322,12 @@ if HAS_PYQT:
             self.window().setGeometry(x, y, w, h)
             event.accept()
 
+        on_release = None
+
         def mouseReleaseEvent(self, event):
             self._press_global = None
+            if callable(self.on_release):
+                self.on_release()
             event.accept()
 
     class HotkeyButton(QPushButton):
@@ -1058,7 +1070,8 @@ class GhostOverlay:
 
         screen = self.app.primaryScreen().geometry()
         x, y = self._get_position(screen.width(), screen.height())
-        self.window.setGeometry(x, y, total_w, total_h)
+        rect = self._restore_geometry(x, y, total_w, total_h)
+        self.window.setGeometry(*rect)
 
         # ── Root layout ──
         root = QVBoxLayout(self.window)
@@ -1254,6 +1267,10 @@ class GhostOverlay:
         # float over the card instead of taking space in it.
         self._expanded_h = total_h
         self._grips = {c: ResizeGrip(c, self.window) for c in ("tl", "tr", "bl", "br")}
+        # Moving or resizing is the user placing the window; remember it.
+        self.bar.on_release = self.save_geometry
+        for _grip in self._grips.values():
+            _grip.on_release = self.save_geometry
         self.window.resizeEvent = lambda e: self._position_grips()
         self._position_grips()
 
@@ -1548,6 +1565,65 @@ class GhostOverlay:
         line.setStyleSheet(f"background: {T.BORDER}; border: none;")
         return line
 
+    # ────────────────────────────────────────────────
+    #  Where the window was left
+    # ────────────────────────────────────────────────
+    @staticmethod
+    def _geometry_path():
+        """Beside the .exe when frozen, or wherever app data actually lands."""
+        return file_context.writable_base() / "overlay.json"
+
+    def save_geometry(self):
+        """
+        Remember where the window is and how big it is.
+
+        The bar is draggable and there are four resize grips, and every launch
+        used to throw all of that away and snap back to top-center at the
+        default size. Never raises: a settings file that cannot be written is
+        not worth losing the overlay over.
+        """
+        if not self.window or not self._expanded:
+            # Collapsed height is the bar, not the size to reopen at.
+            return
+        try:
+            g = self.window.geometry()
+            self._geometry_path().write_text(json.dumps(
+                {"x": g.x(), "y": g.y(), "w": g.width(), "h": g.height()}),
+                encoding="utf-8")
+        except Exception as e:
+            logger.debug(f"Could not save the overlay position: {e}")
+
+    def _restore_geometry(self, x, y, w, h):
+        """
+        (x, y, w, h) to open at — the saved rect if there is a usable one.
+
+        Clamped against the screens that exist now. A rect saved on a second
+        monitor that has since been unplugged would otherwise put the window
+        somewhere unreachable, and this app has no taskbar entry to get it
+        back with.
+        """
+        try:
+            saved = json.loads(self._geometry_path().read_text(encoding="utf-8"))
+            sx, sy = int(saved["x"]), int(saved["y"])
+            sw, sh = int(saved["w"]), int(saved["h"])
+        except Exception:
+            return x, y, w, h
+
+        sw = max(ResizeGrip.MIN_W, sw)
+        sh = max(ResizeGrip.MIN_H, sh)
+
+        # The title bar has to land on a screen someone can see.
+        rect = QRect(sx, sy, sw, sh)
+        if not any(s.availableGeometry().intersects(rect) for s in self.app.screens()):
+            logger.info("Saved overlay position is off-screen — using the default")
+            return x, y, sw, sh
+
+        area = self.app.primaryScreen().availableGeometry()
+        sx = max(area.left(), min(sx, area.right() - 40))
+        sy = max(area.top(), min(sy, area.bottom() - 40))
+        logger.info(f"Restored overlay geometry: {sw}x{sh} at ({sx}, {sy})")
+        return sx, sy, sw, sh
+
     def _toggle_hotkeys_popover(self):
         """
         Show the hotkey list under the info button, or hide it if it is
@@ -1639,6 +1715,7 @@ class GhostOverlay:
 
     def _on_close(self):
         logger.info("Close clicked")
+        self.save_geometry()
         self.stop()
 
     # ────────────────────────────────────────────────

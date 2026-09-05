@@ -173,10 +173,14 @@ MIN_UTTERANCE_SEC = float(os.environ.get("MIN_UTTERANCE_SEC", "1.2"))
 # finally went quiet, then posted all of it in a single request.
 MAX_UTTERANCE_SEC = float(os.environ.get("MAX_UTTERANCE_SEC", "30"))
 # Capture can die quietly: plugging in headphones mid-call switches the
-# default device and the old recorder just returns silence forever. The
-# watchdog notices and re-opens on the new device.
+# default device and the old recorder just returns silence forever; or the
+# capture thread throws and returns, and nothing fills the queue again. The
+# watchdog checks for both and re-opens.
+#
+# There is no stall timeout any more: WASAPI loopback keeps delivering frames
+# of zeros when nothing is playing, so a quiet room and a dead device produced
+# identical frame timestamps and the check could never fire.
 AUDIO_WATCHDOG_SEC = float(os.environ.get("AUDIO_WATCHDOG_SEC", "15"))
-AUDIO_STALL_SEC = float(os.environ.get("AUDIO_STALL_SEC", "12"))
 SAMPLE_RATE = 16000  # Whisper expects 16kHz
 CHUNK_DURATION = 3  # seconds per audio chunk
 SILENCE_THRESHOLD = 0.01  # RMS threshold for silence detection

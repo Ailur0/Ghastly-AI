@@ -94,6 +94,9 @@ class AudioCapture:
         self._is_speaking = False
         self._frames_per_chunk = int(sample_rate * 0.1)  # 100ms frames
 
+        # Why the capture thread stopped, if it did. See capture_alive().
+        self._capture_error = None
+
         # The few frames before the gate opened. Speech starts quieter than it
         # continues, so the frame that finally crosses the threshold is never
         # the first frame of the word — buffering only from there clips the
@@ -339,6 +342,21 @@ class AudioCapture:
         if drained:
             logger.info(f"Discarded {drained} queued chunk(s) after a grab")
     
+    def capture_alive(self):
+        """
+        (alive, reason) for the capture thread.
+
+        The stall check next to this cannot answer the question: WASAPI
+        loopback delivers frames of zeros when nothing is playing, so "silent"
+        and "dead" look identical from the frame timestamps. Whether the
+        thread is still running is a fact, not a heuristic.
+        """
+        if not self.is_running or self._thread is None:
+            return True, None                 # not started, or not thread-based
+        if self._thread.is_alive():
+            return True, None
+        return False, self._capture_error or "the capture thread stopped"
+
     def _soundcard_thread(self):
         """Thread that captures system audio loopback using soundcard (Windows WASAPI)."""
         logger.info("Starting soundcard WASAPI loopback capture...")
@@ -364,6 +382,11 @@ class AudioCapture:
                     audio = data[:, 0].astype(np.float32)
                     self._process_audio(audio)
         except Exception as e:
+            # Recorded, not just logged. This thread dying is the app's real
+            # silent death: is_running stays True, the queue simply never
+            # fills again, and every status the user can see keeps saying
+            # "listening". The watchdog reads this back to say what happened.
+            self._capture_error = str(e)
             logger.error(f"soundcard thread error: {e}")
 
     def _arecord_thread(self):
@@ -440,6 +463,7 @@ class AudioCapture:
         self._preroll.clear()
         self._drop_until = 0.0
         self.last_frame_time = None
+        self._capture_error = None
 
         # A device picked explicitly decides the backend; "sd:" means the
         # user chose a PortAudio input, so skip the WASAPI path entirely.
@@ -511,12 +535,6 @@ class AudioCapture:
         except Exception as e:
             logger.debug(f"Could not read the default speaker: {e}")
             return False
-
-    def seconds_since_last_frame(self):
-        """How long since any audio arrived, or None before the first frame."""
-        if self.last_frame_time is None:
-            return None
-        return time.time() - self.last_frame_time
 
     def get_audio_chunk(self, timeout=30):
         """Get the next audio chunk from the queue. Blocks until available."""

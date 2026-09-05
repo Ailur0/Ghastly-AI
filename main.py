@@ -364,30 +364,49 @@ class GhostInterviewAgent:
             return True, f"'{label}' is now {new_val}, but won't survive a restart."
         return True, f"'{label}' is now {new_val}."
 
+    MAX_CAPTURE_RESTARTS = 3
+
     def _audio_watchdog(self):
         """
         Watch for capture dying quietly.
 
-        The recorder holds one device open. If Windows switches the default
-        speaker — headphones, a Bluetooth headset, a call app taking over —
-        the old handle keeps returning silence and the status pill happily
-        says "listening" while nothing is heard again.
+        Two ways it can. Windows switches the default speaker — headphones, a
+        Bluetooth headset, a call app taking over — and the old handle keeps
+        returning silence while the pill says "listening". Or the capture
+        thread throws, logs, and returns: is_running stays True, the queue
+        never fills again, and nothing anywhere says so.
+
+        The old stall check could not catch either. WASAPI loopback delivers
+        frames of zeros when nothing is playing, so "nobody is talking" and
+        "the device is dead" produce identical frame timestamps — which is
+        why it is gone and thread liveness took its place.
         """
+        restarts = 0
         while self.is_running:
             time.sleep(config.AUDIO_WATCHDOG_SEC)
             if not self.is_running:
                 return
             try:
+                alive, reason = self.audio.capture_alive()
+                if not alive:
+                    if restarts >= self.MAX_CAPTURE_RESTARTS:
+                        continue          # already told them; don't thrash
+                    restarts += 1
+                    logger.error(f"Audio capture stopped ({reason}) — "
+                                 f"restart {restarts}/{self.MAX_CAPTURE_RESTARTS}")
+                    self.restart_audio(self.context_mgr.get_audio_device())
+                    still_alive, _ = self.audio.capture_alive()
+                    if still_alive:
+                        self.notify("Audio capture stopped and was restarted.")
+                    elif restarts >= self.MAX_CAPTURE_RESTARTS:
+                        self.overlay.set_status("error")
+                        self.notify(f"Audio capture keeps failing ({reason}). "
+                                    f"Pick a different source in setup.")
+                    continue
+
                 if self.audio.default_device_changed():
                     logger.warning("Default audio device changed — reopening capture")
                     self.notify("Audio device changed — reconnected to the new one.")
-                    self.restart_audio(self.context_mgr.get_audio_device())
-                    continue
-
-                stalled = self.audio.seconds_since_last_frame()
-                if stalled is not None and stalled > config.AUDIO_STALL_SEC:
-                    logger.warning(f"No audio for {stalled:.0f}s — reopening capture")
-                    self.notify("Audio capture stalled — restarting it.")
                     self.restart_audio(self.context_mgr.get_audio_device())
             except Exception as e:
                 logger.error(f"Audio watchdog error: {e}")
