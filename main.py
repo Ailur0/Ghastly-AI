@@ -82,6 +82,11 @@ if _picker_crashed:
                    "screen capture)")
 
 
+# A JPEG starts FF D8; the screen capture falls back to PNG when PIL is
+# missing, and the vision request has to declare which it is sending.
+JPEG_MAGIC = bytes((0xFF, 0xD8))
+
+
 class GhostInterviewAgent:
     def __init__(self):
         # Initialize components
@@ -91,6 +96,7 @@ class GhostInterviewAgent:
             silence_threshold=config.SILENCE_THRESHOLD,
             silence_duration=config.SILENCE_DURATION,
             min_utterance_sec=config.MIN_UTTERANCE_SEC,
+            max_utterance_sec=config.MAX_UTTERANCE_SEC,
             ring_seconds=config.AUDIO_RING_SEC
         )
         
@@ -147,8 +153,10 @@ class GhostInterviewAgent:
             config.GRAB_HOTKEY,
             self.on_grab_hotkey
         )
-        # Last question asked, so the retry button has something to re-run.
-        self._last_question = None
+        # What retry would re-run: ("text", question) for anything spoken or
+        # typed, ("vision", image_b64, mime) for a screen capture. Tagged
+        # rather than a bare string because the two are answered differently.
+        self._last_request = None
 
         # An outage produces one failure per utterance. The pill tracks every
         # one, but the panel only hears about a given problem once a minute —
@@ -222,15 +230,35 @@ class GhostInterviewAgent:
                          daemon=True).start()
 
     def on_retry(self):
-        """Answer the last question again."""
-        if not self._last_question:
+        """
+        Answer the last question again — or re-read the last screen capture.
+
+        Retry used to only know about spoken and typed questions, so pressing
+        it after a capture silently re-answered something older.
+        """
+        request = self._last_request
+        if not request:
             self.overlay.set_status("ready")
             self.overlay.notice("Nothing to retry yet.")
             logger.info("Retry pressed with no previous question")
             return
-        logger.info(f"Retrying: {self._last_question[:80]}")
+
+        if request[0] == "vision":
+            _, image_b64, mime = request
+            logger.info("Retrying the last screen capture")
+            threading.Thread(target=self._answer_screen_capture,
+                             args=(image_b64, mime), daemon=True).start()
+            return
+
+        question = request[1]
+        # Forget the recorded attempt first, so regenerating does not show the
+        # model its own previous answer to the very question it is redoing.
+        # Done here rather than inside process_question so two fast retries
+        # cannot interleave.
+        self.context_mgr.pop_last_qa(question)
+        logger.info(f"Retrying: {question[:80]}")
         threading.Thread(target=self.process_question,
-                         args=(self._last_question,), daemon=True).start()
+                         args=(question,), daemon=True).start()
 
     def on_panic_hotkey(self):
         """Hide or show the overlay without quitting it."""
@@ -472,7 +500,7 @@ class GhostInterviewAgent:
         Target: <2s total after question is complete.
         """
         start_time = time.time()
-        self._last_question = question_text
+        self._last_request = ("text", question_text)
 
         # The newest question always wins the panel.
         ticket = self._claim_answer()
@@ -587,6 +615,12 @@ class GhostInterviewAgent:
             logger.info(f"Grab hotkey: transcribing the last {secs:.1f}s")
             self.overlay.set_status("transcribing")
 
+            # The VAD is still holding the very speech just taken out of the
+            # ring. Left alone it emits it a moment later, it gets transcribed
+            # a second time, and that duplicate answer supersedes this one —
+            # so the answer deliberately asked for gets wiped while being read.
+            self.audio.suppress_pending(config.SILENCE_DURATION + 0.5)
+
             result = transcribe(audio, sample_rate=config.SAMPLE_RATE)
 
             # Say what actually went wrong. Reporting a failed request as
@@ -621,6 +655,28 @@ class GhostInterviewAgent:
 
     def _process_screen_capture(self):
         """Capture the screen, query the vision LLM, stream to overlay."""
+        try:
+            png_bytes = self.screen_capture.capture_primary_monitor()
+        except Exception as e:
+            logger.error(f"Screen capture failed: {e}")
+            self.overlay.set_status("error")
+            self.notify("Could not capture the screen.")
+            return
+
+        # JPEG from the compressed path, PNG from the no-PIL fallback.
+        mime = "image/jpeg" if png_bytes[:2] == JPEG_MAGIC else "image/png"
+        image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+        self._answer_screen_capture(image_b64, mime)
+
+    def _answer_screen_capture(self, image_b64: str, mime: str):
+        """
+        Ask the vision model about an already-captured frame.
+
+        Separate from the capture itself so retry can re-ask about the same
+        screen. The frame used to be discarded the moment the request was
+        built, which left retry after a capture silently re-answering an
+        older spoken question instead.
+        """
         start_time = time.time()
         # Unlike a spoken question, a capture does not supersede: a press
         # while an answer is streaming is dropped rather than queued, which
@@ -632,19 +688,6 @@ class GhostInterviewAgent:
         try:
             self._emit(ticket, self.overlay.set_status, "answering")
             self._emit(ticket, self.overlay.show_question, "[Screen capture]")
-
-            try:
-                png_bytes = self.screen_capture.capture_primary_monitor()
-            except Exception as e:
-                logger.error(f"Screen capture failed: {e}")
-                self._emit(ticket, self.overlay.stream_answer,
-                           "[Error: screen capture failed]")
-                return
-
-            image_bytes = png_bytes
-            # Auto-detect MIME type: compressed capture returns JPEG, fallback is PNG
-            mime = "image/jpeg" if png_bytes[:2] == b"\xff\xd8" else "image/png"
-            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
             context = self.context_mgr.get_context_string()
             state = self.context_mgr.get_state()
@@ -697,7 +740,11 @@ class GhostInterviewAgent:
                 self._emit(ticket, self.overlay.show_latency, total_ms, ttft)
 
             if not (meta and meta.get("error")):
-                self.context_mgr.add_qa("[Screen capture]", full_answer)
+                # Deliberately not recorded in the Q&A history: "[Screen
+                # capture]" is not a question, and it would spend one of the
+                # three prompt history slots on something the model cannot
+                # interpret. Retry gets at it through _last_request instead.
+                self._last_request = ("vision", image_b64, mime)
 
         except Exception as e:
             logger.error(f"Screen capture query failed: {e}")

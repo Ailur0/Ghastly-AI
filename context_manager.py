@@ -247,7 +247,32 @@ class ContextManager:
         self.save_state()
         
         logger.info(f"Q&A added: #{self.state['question_count']}")
-    
+
+    def pop_last_qa(self, question: str) -> bool:
+        """
+        Drop the trailing Q&A pair, if it is for `question`. Returns whether
+        anything was removed.
+
+        Retry re-runs a question that has already been recorded, and without
+        this the pair is appended a second time — so the model regenerating an
+        answer is shown its own previous attempt while the system prompt tells
+        it not to reuse earlier phrasing, which pushes it away from an answer
+        it may have got right. Two retries used to fill the whole history
+        window with one question.
+        """
+        asked = self.state.get("questions_asked") or []
+        if not asked or asked[-1] != question:
+            return False
+
+        asked.pop()
+        answers = self.state.get("answers_given") or []
+        if answers:
+            answers.pop()
+        self.state["question_count"] = max(0, self.state.get("question_count", 1) - 1)
+        self.save_state()
+        logger.info("Dropped the previous attempt at this question before retrying")
+        return True
+
     def get_context_string(self) -> str:
         """
         Get the full context string for the LLM prompt.

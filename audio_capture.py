@@ -47,14 +47,18 @@ except (ImportError, OSError):
 
 
 class AudioCapture:
-    def __init__(self, sample_rate=16000, chunk_duration=3, 
+    def __init__(self, sample_rate=16000, chunk_duration=3,
                  silence_threshold=0.01, silence_duration=1.5,
-                 min_utterance_sec=1.2, ring_seconds=30):
+                 min_utterance_sec=1.2, ring_seconds=30,
+                 max_utterance_sec=30):
         self.sample_rate = sample_rate
         # Utterances shorter than this never reach the transcription API:
         # "mm-hm" and "right" are not questions, and each one would cost a
         # request out of the daily quota.
         self.min_utterance_sec = min_utterance_sec
+        # And a ceiling, because nothing else ends an utterance that never
+        # goes quiet.
+        self.max_utterance_sec = max_utterance_sec
         self.chunk_duration = chunk_duration
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
@@ -85,9 +89,26 @@ class AudioCapture:
         
         # Buffer for accumulating audio
         self._buffer = []
+        self._buffer_samples = 0
         self._silence_frames = 0
         self._is_speaking = False
         self._frames_per_chunk = int(sample_rate * 0.1)  # 100ms frames
+
+        # The few frames before the gate opened. Speech starts quieter than it
+        # continues, so the frame that finally crosses the threshold is never
+        # the first frame of the word — buffering only from there clips the
+        # attack and Whisper loses or mangles the opening word. "How would you
+        # design..." arriving as "would you design..." changes the answer, not
+        # just the transcript.
+        self._preroll = deque(maxlen=3)          # ~300ms
+
+        # Set by the grab hotkey. The speech it just transcribed is still
+        # sitting in _buffer, so without this the VAD emits it a moment later,
+        # it gets transcribed a second time, and the duplicate answer
+        # supersedes the grabbed one — the user watches the answer they asked
+        # for get wiped. A float write from another thread is atomic enough
+        # for a deadline nobody reads twice.
+        self._drop_until = 0.0
         
     def set_device(self, device_id):
         """Point capture at a device id from list_input_devices(). Takes
@@ -245,34 +266,78 @@ class AudioCapture:
             logger.debug(f"VAD frame {self._frame_count}: RMS={rms:.4f} threshold={self.silence_threshold} speaking={self._is_speaking}")
         
         if rms > self.silence_threshold:
-            # Speech detected
+            if not self._is_speaking:
+                # Opening the gate: take the sub-threshold frames with it, so
+                # the utterance starts before the first loud syllable.
+                for frame in self._preroll:
+                    self._buffer.append(frame)
+                    self._buffer_samples += len(frame)
+                self._preroll.clear()
             self._is_speaking = True
             self._silence_frames = 0
             self._buffer.append(audio.copy())
+            self._buffer_samples += len(audio)
+
+            # Nothing else stops an utterance growing. Room tone, music or a
+            # fan holds the gate open indefinitely, so three questions arrive
+            # as one chunk — or nothing is emitted until the room falls quiet
+            # and a multi-minute WAV goes to the STT API in one request.
+            if self._buffer_samples >= self.sample_rate * self.max_utterance_sec:
+                logger.info(f"Utterance hit the {self.max_utterance_sec:.0f}s "
+                            f"ceiling — emitting early")
+                self._emit_buffer()
         else:
             # Silence
             if self._is_speaking:
                 self._silence_frames += 1
                 self._buffer.append(audio.copy())  # keep trailing silence
-                
+                self._buffer_samples += len(audio)
+
                 silence_threshold_frames = int(
                     (self.silence_duration * self.sample_rate) / self._frames_per_chunk
                 )
                 if self._silence_frames >= silence_threshold_frames:
-                    if len(self._buffer) > 0:
-                        combined = np.concatenate(self._buffer)
-                        if len(combined) >= self.sample_rate * self.min_utterance_sec:
-                            self.audio_queue.put(combined)
-                            logger.info(f"Audio chunk emitted: "
-                                        f"{len(combined)/self.sample_rate:.1f}s")
-                        else:
-                            logger.debug(
-                                f"Skipped {len(combined) / self.sample_rate:.2f}s "
-                                f"utterance (floor {self.min_utterance_sec}s)")
-                    self._buffer = []
-                    self._is_speaking = False
-                    self._silence_frames = 0
-            # else: silence before any speech — discard
+                    self._emit_buffer()
+            else:
+                # Silence before any speech. Kept only as pre-roll for the
+                # utterance that may be about to start.
+                self._preroll.append(audio.copy())
+
+    def _emit_buffer(self):
+        """Hand the buffered utterance to the queue and reset the gate."""
+        if self._buffer:
+            combined = np.concatenate(self._buffer)
+            secs = len(combined) / self.sample_rate
+            if time.time() < self._drop_until:
+                # The grab hotkey already transcribed this window.
+                logger.info(f"Dropped {secs:.1f}s the grab hotkey just answered")
+            elif len(combined) >= self.sample_rate * self.min_utterance_sec:
+                self.audio_queue.put(combined)
+                logger.info(f"Audio chunk emitted: {secs:.1f}s")
+            else:
+                logger.debug(f"Skipped {secs:.2f}s utterance "
+                             f"(floor {self.min_utterance_sec}s)")
+        self._buffer = []
+        self._buffer_samples = 0
+        self._is_speaking = False
+        self._silence_frames = 0
+
+    def suppress_pending(self, seconds: float):
+        """
+        Ignore whatever the VAD is holding, and anything it emits for the next
+        `seconds`. Called by the grab hotkey, which has just transcribed that
+        same audio out of the ring buffer.
+        """
+        self._drop_until = time.time() + seconds
+        drained = 0
+        try:
+            while True:
+                self.audio_queue.get_nowait()
+                drained += 1
+        except queue.Empty:
+            pass
+        if drained:
+            logger.info(f"Discarded {drained} queued chunk(s) after a grab")
     
     def _soundcard_thread(self):
         """Thread that captures system audio loopback using soundcard (Windows WASAPI)."""
@@ -364,8 +429,17 @@ class AudioCapture:
         """Start capturing audio."""
         self.is_running = True
         # Whatever the previous device left behind is not what the grab
-        # hotkey means by "the last twenty seconds".
+        # hotkey means by "the last twenty seconds" — and a half-captured
+        # utterance from the old device must not get concatenated onto the
+        # first frames of the new one.
         self._ring_clear()
+        self._buffer = []
+        self._buffer_samples = 0
+        self._silence_frames = 0
+        self._is_speaking = False
+        self._preroll.clear()
+        self._drop_until = 0.0
+        self.last_frame_time = None
 
         # A device picked explicitly decides the backend; "sd:" means the
         # user chose a PortAudio input, so skip the WASAPI path entirely.

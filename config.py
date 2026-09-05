@@ -168,6 +168,10 @@ AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "Auto")
 # Anything shorter than this is a grunt, not a question. Each utterance costs
 # one Groq transcription request, so the floor is money as well as latency.
 MIN_UTTERANCE_SEC = float(os.environ.get("MIN_UTTERANCE_SEC", "1.2"))
+# And a ceiling. The gate only closes on silence, so continuous sound — music,
+# room tone, a fan — kept one "utterance" growing without limit until the room
+# finally went quiet, then posted all of it in a single request.
+MAX_UTTERANCE_SEC = float(os.environ.get("MAX_UTTERANCE_SEC", "30"))
 # Capture can die quietly: plugging in headphones mid-call switches the
 # default device and the old recorder just returns silence forever. The
 # watchdog notices and re-opens on the new device.
