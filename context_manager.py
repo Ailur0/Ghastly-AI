@@ -21,35 +21,6 @@ import file_context
 
 logger = logging.getLogger(__name__)
 
-# Mood detection keywords
-MOOD_KEYWORDS = {
-    "aggressive": ["why did you", "that's wrong", "that's not", "no that's", 
-                   "i don't agree", "that doesn't make sense", "are you sure"],
-    "friendly": ["great", "interesting", "nice", "good answer", "i like",
-                 "that's good", "awesome", "well done"],
-    "confused": ["i don't understand", "can you clarify", "what do you mean",
-                 "i'm not sure i follow", "could you elaborate"],
-    "impressed": ["excellent", "impressive", "wow", "that's exactly",
-                  "perfect answer", "spot on"],
-    "skeptical": ["really", "are you sure", "is that right", "i doubt",
-                  "that seems unlikely"],
-}
-
-# Persona detection keywords
-PERSONA_KEYWORDS = {
-    "technical": ["implement", "code", "algorithm", "system design", "architecture",
-                  "optimize", "debug", "complexity", "data structure", "api",
-                  "database", "deploy", "scalable", "latency", "throughput"],
-    "behavioral": ["tell me about a time", "how did you handle", "describe a situation",
-                   "what would you do if", "give me an example", "conflict",
-                   "team", "leadership", "challenge", "failure"],
-    "casual": ["tell me about yourself", "why this company", "where do you see",
-               "what are your hobbies", "why should we hire"],
-    "managerial": ["how would you", "what's your approach to", "how do you manage",
-                   "how do you prioritize", "how would you handle"],
-}
-
-
 from pathlib import Path
 
 def resolve_writable_path(path_str: str) -> str:
@@ -96,9 +67,6 @@ class ContextManager:
         self.state = {
             "questions_asked": [],
             "answers_given": [],
-            "interviewer_mood": "neutral",
-            "interviewer_persona": "unknown",
-            "current_topic": "intro",
             "question_count": 0,
             "session_start": None,
             "last_question_time": None,
@@ -259,61 +227,6 @@ class ContextManager:
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
     
-    def detect_mood(self, text: str) -> str:
-        """Detect interviewer mood from their question text."""
-        text_lower = text.lower()
-        
-        for mood, keywords in MOOD_KEYWORDS.items():
-            for kw in keywords:
-                if kw in text_lower:
-                    return mood
-        
-        return self.state.get("interviewer_mood", "neutral")
-    
-    def detect_persona(self, text: str) -> str:
-        """Detect interviewer style/persona from question text."""
-        text_lower = text.lower()
-        
-        for persona, keywords in PERSONA_KEYWORDS.items():
-            for kw in keywords:
-                if kw in text_lower:
-                    return persona
-        
-        return self.state.get("interviewer_persona", "technical")
-    
-    def detect_topic(self, text: str) -> str:
-        """Detect current interview topic from question."""
-        text_lower = text.lower()
-        
-        topics = {
-            "intro": ["yourself", "background", "experience", "who are you"],
-            "ml": ["machine learning", "model", "training", "inference", "neural",
-                   "tensorflow", "pytorch", "deep learning", "accuracy", "loss"],
-            "mlops": ["mlops", "deployment", "pipeline", "ci/cd", "mlflow",
-                      "docker", "kubernetes", "monitoring"],
-            "python": ["python", "gIL", "decorator", "generator", "async",
-                       "concurrent", "multiprocessing"],
-            "database": ["sql", "nosql", "database", "query", "index",
-                         "normalization", "join", "mongodb", "postgres"],
-            "api": ["api", "rest", "fastapi", "flask", "endpoint", "http",
-                    "authentication", "rate limit"],
-            "system_design": ["design", "scalable", "architecture", "distributed",
-                              "microservice", "load balanc", "cache", "queue"],
-            "behavioral": ["team", "conflict", "failure", "challenge", "leadership",
-                           "time management", "priority"],
-            "data": ["data", "pandas", "numpy", "etl", "data pipeline",
-                     "preprocessing", "feature engineering"],
-            "rag": ["rag", "retrieval", "embedding", "vector", "langchain",
-                    "llm", "document"],
-        }
-        
-        for topic, keywords in topics.items():
-            for kw in keywords:
-                if kw in text_lower:
-                    return topic
-        
-        return "general"
-    
     def add_qa(self, question: str, answer: str):
         """
         Add a Q&A pair to state and persist.
@@ -323,9 +236,6 @@ class ContextManager:
         
         self.state["questions_asked"].append(question)
         self.state["answers_given"].append(answer)
-        self.state["interviewer_mood"] = self.detect_mood(question)
-        self.state["interviewer_persona"] = self.detect_persona(question)
-        self.state["current_topic"] = self.detect_topic(question)
         self.state["question_count"] += 1
         
         if self.state["session_start"] is None:
@@ -336,10 +246,7 @@ class ContextManager:
         # Persist to file
         self.save_state()
         
-        logger.info(f"Q&A added: #{self.state['question_count']} | "
-                      f"mood={self.state['interviewer_mood']} | "
-                      f"persona={self.state['interviewer_persona']} | "
-                      f"topic={self.state['current_topic']}")
+        logger.info(f"Q&A added: #{self.state['question_count']}")
     
     def get_context_string(self) -> str:
         """
@@ -360,9 +267,6 @@ class ContextManager:
         self.state = {
             "questions_asked": [],
             "answers_given": [],
-            "interviewer_mood": "neutral",
-            "interviewer_persona": "unknown",
-            "current_topic": "intro",
             "question_count": 0,
             "session_start": time.time(),
             "last_question_time": None,
@@ -392,11 +296,8 @@ if __name__ == "__main__":
     ]
     
     for t in tests:
-        mood = cm.detect_mood(t)
-        persona = cm.detect_persona(t)
-        topic = cm.detect_topic(t)
-        print(f"\nQ: {t}")
-        print(f"  mood={mood} | persona={persona} | topic={topic}")
+        cm.add_qa(t, "(test answer)")
+    print(f"\nRecorded {cm.state['question_count']} Q&A pairs")
     
     # Test context string
     ctx = cm.get_context_string()

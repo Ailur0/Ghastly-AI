@@ -25,7 +25,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import (
     OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_VISION_MODEL, OLLAMA_BASE_URL,
-    KEEP_HISTORY,
+    KEEP_HISTORY, LLM_TEMPERATURE,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,22 @@ def tokens_for_style(style: str, default: int = 250) -> int:
     return ANSWER_STYLE_TOKENS.get(style, default)
 
 
+HISTORY_CHARS = 200
+
+
+def _clip(text: str, limit: int = HISTORY_CHARS) -> str:
+    """
+    Shorten a history entry, and say so only when something was actually cut.
+
+    The ellipsis used to sit outside the slice, so every previous answer was
+    presented to the model as truncated whether or not it was — a forty-character
+    answer arrived looking like the opening of a longer one. Questions were not
+    clipped at all, so one rambling transcript could outweigh three answers.
+    """
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
 def build_prompt(question: str, context: str, state: dict) -> str:
     """Build the full prompt from question + context + state."""
     recent_qa = ""
@@ -102,10 +118,12 @@ def build_prompt(question: str, context: str, state: dict) -> str:
     ))
     if qa_history:
         recent = qa_history[-KEEP_HISTORY:] if KEEP_HISTORY > 0 else []
-        recent_qa = "\n\nPrevious Q&A:\n"
+        lines = ["Previous Q&A:"]
         for i, (q, a) in enumerate(recent, 1):
-            recent_qa += f"Q{i}: {q}\nA{i}: {a[:200]}...\n"
-    
+            lines.append(f"Q{i}: {_clip(q)}")
+            lines.append(f"A{i}: {_clip(a)}")
+        recent_qa = "\n".join(lines)
+
     language = state.get("code_language", "Auto")
     language_line = ""
     if language and language != "Auto":
@@ -117,25 +135,20 @@ def build_prompt(question: str, context: str, state: dict) -> str:
                          f"not need any.")
 
     style_rule = ANSWER_STYLE_RULES.get(state.get("answer_style", "Balanced"), "")
-    style_line = f"\n{style_rule}" if style_rule else ""
 
-    mood = state.get("interviewer_mood", "neutral")
-    persona = state.get("interviewer_persona", "technical")
-    topic = state.get("current_topic", "general")
-    
-    prompt = f"""Context:
-{context}
+    # Assembled from the parts that exist rather than one template with holes
+    # in it: an unset language, style or history used to leave a run of blank
+    # lines behind, which is noise the model still has to read past.
+    sections = [f"Context:\n{context.strip()}"]
+    if language_line:
+        sections.append(language_line.strip())
+    if style_rule:
+        sections.append(style_rule)
+    if recent_qa:
+        sections.append(recent_qa)
+    sections.append(f"Question: {question}\n\nAnswer:")
 
-Interviewer mood: {mood}
-Interviewer style: {persona}
-Current topic: {topic}{language_line}{style_line}
-{recent_qa}
-
-Question: {question}
-
-Answer:"""
-    
-    return prompt
+    return "\n\n".join(sections)
 
 
 # A long answer sometimes arrives wrapped in ``` fences despite the prompt
@@ -309,7 +322,7 @@ def query_ollama_stream(
         ],
         "stream": True,
         "max_tokens": max_tokens,
-        "temperature": 0.85,
+        "temperature": LLM_TEMPERATURE,
     }
 
     headers = {
@@ -360,7 +373,7 @@ def query_ollama_vision_stream(
         ],
         "stream": True,
         "max_tokens": max_tokens,
-        "temperature": 0.85,
+        "temperature": LLM_TEMPERATURE,
     }
 
     headers = {
@@ -381,9 +394,6 @@ if __name__ == "__main__":
     test_state = {
         "questions_asked": [],
         "answers_given": [],
-        "interviewer_mood": "neutral",
-        "interviewer_persona": "technical",
-        "current_topic": "general"
     }
     
     for chunk in query_ollama_stream(

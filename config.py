@@ -240,10 +240,19 @@ ANSWER_STYLE_PINNED = bool(_ANSWER_STYLE_ENV)
 
 # === Context ===
 CONTEXT_FILE = "context/interview-context.md"
-MAX_CONTEXT_CHARS = 8000  # trim context if too long
+# How much of your documents reaches the model. gpt-oss-120b has a 128k
+# window, so 8000 chars (~2k tokens) was leaving almost all of it unused —
+# and it was the reason one long resume truncated and every other document
+# was silently dropped. Raise further if you upload a lot; it costs TTFT.
+MAX_CONTEXT_CHARS = int(os.environ.get("MAX_CONTEXT_CHARS", "16000"))
 
 # === Behavior ===
+# 0.85 was high for an assistant answering technical questions under time
+# pressure — it buys spoken-sounding variety at the cost of steadiness on
+# facts and code. Settable so it can be tuned against real interviews rather
+# than guessed at: raise it if answers start sounding canned.
+LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.5"))
 MAX_ANSWER_CHARS = 1000  # limit answer length for quick reading
 SHOW_LATENCY = True  # show time-to-answer in overlay
 AUTO_SCROLL = True  # auto-scroll to latest answer
-KEEP_HISTORY = 3  # show last N answers in overlay
+KEEP_HISTORY = 3  # previous Q&A pairs carried into each prompt
