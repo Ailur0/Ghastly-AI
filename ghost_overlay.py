@@ -684,6 +684,12 @@ if HAS_PYQT:
 
             dlg = QFileDialog(self, "Add resume or notes")
             dlg.setFileMode(QFileDialog.ExistingFiles)
+            # The overlay and this panel are both WindowStaysOnTop. Without
+            # the same hint the picker opens *under* them — and since it is
+            # modal, every click on the panel above it is swallowed, so the
+            # app looks frozen behind a dialog you cannot reach. Measured at
+            # 62% of the picker covered, Open and Cancel among it.
+            dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowStaysOnTopHint)
             if not native:
                 # Qt's own dialog, not the native one — see the class
                 # docstring. The native one cannot be hidden from capture.
@@ -702,7 +708,14 @@ if HAS_PYQT:
 
             # Exclude it once it is on screen. Queued rather than show()-then-
             # exec_(), which meant opening the dialog twice.
-            QTimer.singleShot(0, lambda: exclude_from_capture(dlg))
+            def _surface():
+                exclude_from_capture(dlg)
+                # Both windows sit at the always-on-top level now, so settle
+                # the order explicitly rather than trusting activation.
+                dlg.raise_()
+                dlg.activateWindow()
+
+            QTimer.singleShot(0, _surface)
             QTimer.singleShot(80, exclude_process_windows)
 
             logger.info("Upload: opening the file picker")
@@ -898,6 +911,7 @@ class GhostOverlay:
         self._grips = {}
         self._expanded_h = None
         self._setup_dialog = None
+        self._hotkeys_popover = None
         self._capture_shield = None
         self._sweep_timer = None
 
@@ -1061,8 +1075,11 @@ class GhostOverlay:
             "↻", "Answer the last question again", self._on_retry_clicked)
         bar_layout.addWidget(self.retry_btn)
 
-        # Info (hover tooltip lists hotkeys)
-        self.info_btn = self._bar_button("ⓘ", self._build_hotkeys_tooltip())
+        # Info — click for the hotkey list. It used to be a hover tooltip,
+        # which meant the list appeared when you were reaching for something
+        # else and vanished the moment you tried to read it.
+        self.info_btn = self._bar_button("ⓘ", "Hotkeys",
+                                         self._toggle_hotkeys_popover)
         bar_layout.addWidget(self.info_btn)
 
         bar_layout.addStretch()
@@ -1467,30 +1484,94 @@ class GhostOverlay:
         line.setStyleSheet(f"background: {T.BORDER}; border: none;")
         return line
 
+    def _toggle_hotkeys_popover(self):
+        """
+        Show the hotkey list under the info button, or hide it if it is
+        already up. Built fresh each time, so a rebind is reflected without
+        anything having to remember to refresh it.
+        """
+        if self._hotkeys_popover is not None and self._hotkeys_popover.isVisible():
+            self._hotkeys_popover.close()
+            self._hotkeys_popover = None
+            return
+
+        # Qt.Popup closes itself on the next click outside and on Escape.
+        pop = QFrame(self.window, Qt.Popup | Qt.FramelessWindowHint)
+        pop.setObjectName("hotkeyPopover")
+        pop.setAttribute(Qt.WA_StyledBackground, True)
+        pop.setStyleSheet(f"""
+            #hotkeyPopover {{
+                background-color: rgba(24, 24, 27, 0.98);
+                border: 1px solid {T.BORDER};
+                border-radius: 10px;
+            }}
+        """)
+        lay = QVBoxLayout(pop)
+        lay.setContentsMargins(12, 10, 12, 11)
+        lay.setSpacing(7)
+
+        heading = QLabel("HOTKEYS")
+        heading.setStyleSheet(f"color:{T.TEXT_MUTE};font-family:{T.FONT};"
+                              "font-size:9px;font-weight:700;letter-spacing:1px;"
+                              "background:transparent;border:none;")
+        lay.addWidget(heading)
+
+        if not self.hotkeys:
+            empty = QLabel("None configured")
+            empty.setStyleSheet(f"color:{T.TEXT_DIM};font-family:{T.FONT};"
+                                "font-size:12px;background:transparent;border:none;")
+            lay.addWidget(empty)
+
+        for label, combo in self.hotkeys:
+            row = QHBoxLayout()
+            row.setSpacing(18)
+            name = QLabel(label)
+            name.setStyleSheet(f"color:{T.TEXT_DIM};font-family:{T.FONT};"
+                               "font-size:12px;background:transparent;border:none;")
+            chip = QLabel(format_combo(combo))
+            chip.setStyleSheet(f"""
+                QLabel {{
+                    color: {T.TEXT};
+                    background: {T.BG_RAISED};
+                    border: 1px solid {T.BORDER};
+                    border-radius: 5px;
+                    padding: 2px 7px;
+                    font-family: {T.FONT};
+                    font-size: 10px;
+                    font-weight: 600;
+                }}
+            """)
+            row.addWidget(name)
+            row.addStretch()
+            row.addWidget(chip)
+            lay.addLayout(row)
+
+        pop.adjustSize()
+        # Hang it under the info button, nudged left so a wide list stays on
+        # screen rather than running off the right edge.
+        anchor = self.info_btn.mapToGlobal(self.info_btn.rect().bottomLeft())
+        x, y = anchor.x() - 8, anchor.y() + 8
+        screen = self.app.primaryScreen().availableGeometry()
+        x = max(screen.left() + 4, min(x, screen.right() - pop.width() - 4))
+        pop.move(x, y)
+        pop.show()
+        exclude_from_capture(pop)
+        self._hotkeys_popover = pop
+
     def set_hotkey(self, label: str, combo: str):
         """
-        Record a rebound hotkey and rebuild the info tooltip, which is
-        otherwise only built once at startup and would go on advertising the
-        combo the app no longer listens for.
+        Record a rebound hotkey.
+
+        The popover reads this list when it opens, so there is nothing to
+        refresh there; only the chip in the bar holds its own copy.
         """
         for i, (l, _) in enumerate(self.hotkeys):
             if l == label:
                 self.hotkeys[i] = (l, combo)
                 break
-        if self.info_btn is not None:
-            self.info_btn.setToolTip(self._build_hotkeys_tooltip())
         # The bar shows this one combo in full, so it has to move too.
         if label == "Answer what was just said" and self.ask_hint is not None:
             self.ask_hint.setText(format_combo(combo))
-
-    def _build_hotkeys_tooltip(self) -> str:
-        """Build the info button's tooltip text listing all configured hotkeys."""
-        if not self.hotkeys:
-            return "No hotkeys configured"
-        lines = ["Hotkeys:"]
-        for label, combo in self.hotkeys:
-            lines.append(f"{label} — {format_combo(combo)}")
-        return "\n".join(lines)
 
     def _on_close(self):
         logger.info("Close clicked")
