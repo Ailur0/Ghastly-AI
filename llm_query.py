@@ -296,8 +296,8 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
         if response is not None:
             try:
                 response.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Closing the response stream failed: {e}")
 
 
 def query_ollama_stream(

@@ -11,6 +11,13 @@ import file_context
 
 logger = logging.getLogger(__name__)
 
+# This module is imported before main.py configures logging, so anything it
+# logs at import time goes nowhere. Findings are collected here instead and
+# replayed into the log once it exists — which folder settings are written
+# to, and which .env files were actually read, are the first two questions
+# any support conversation about this app runs into.
+STARTUP_NOTES = []
+
 # PyInstaller base & executable paths
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
     _base_dir = Path(sys._MEIPASS)
@@ -46,7 +53,9 @@ def _env_files():
             yield path
 
 
+_env_read = []
 for _env_file in _env_files():
+    _env_read.append(str(_env_file))
     with open(_env_file, encoding='utf-8') as f:
         for line in f:
             line = line.strip()
@@ -55,6 +64,12 @@ for _env_file in _env_files():
             if "=" in line:
                 key, val = line.split("=", 1)
                 os.environ.setdefault(key.strip(), val.strip())
+
+
+STARTUP_NOTES.append(
+    f"settings written to {_env_write_path}"
+    + (f"; read from {', '.join(_env_read)}" if _env_read
+       else "; no .env found anywhere — every value is a built-in default"))
 
 
 def update_env_file(key: str, value: str) -> bool:
@@ -160,6 +175,11 @@ GRAB_HOTKEY = os.environ.get("GRAB_HOTKEY", "ctrl+;")
 LOG_FILE = os.environ.get("LOG_FILE", "logs/ghastly.log")
 LOG_MAX_BYTES = 1_000_000
 LOG_BACKUPS = 2
+# Set LOG_LEVEL=DEBUG in .env to turn on the per-frame and per-widget detail.
+# It exists so a machine that is misbehaving can be turned up without sending
+# that person a new build — the frame-level VAD lines are far too noisy to
+# leave on, and far too useful to leave out.
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
 # === Audio Capture ===
 # "Auto" lets the capture layer pick; otherwise a device id from

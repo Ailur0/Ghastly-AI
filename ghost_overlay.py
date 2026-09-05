@@ -90,6 +90,41 @@ except ImportError:
     logger.warning("PyQt5 not installed")
 
 
+def _log_display_environment(app):
+    """
+    Screens, scaling and Qt versions.
+
+    A dropdown that would not open on someone else's machine cost a long
+    round of guessing precisely because none of this was written down: how
+    many monitors, what scaling, which Qt. Every window this app places is
+    positioned against these numbers.
+    """
+    try:
+        from PyQt5.QtCore import QT_VERSION_STR, PYQT_VERSION_STR
+        logger.info(f"  qt           : Qt {QT_VERSION_STR} / PyQt {PYQT_VERSION_STR} "
+                    f"| platform plugin '{app.platformName()}'")
+        screens = app.screens()
+        primary = app.primaryScreen()
+        logger.info(f"  screens      : {len(screens)}")
+        for i, sc in enumerate(screens):
+            g, a = sc.geometry(), sc.availableGeometry()
+            logger.info(
+                f"    [{i}]{' primary' if sc is primary else '        '} "
+                f"{g.width()}x{g.height()} at ({g.x()},{g.y()}) "
+                f"| work area {a.width()}x{a.height()} "
+                f"| dpi {sc.logicalDotsPerInch():.0f} "
+                f"| ratio {sc.devicePixelRatio()}")
+        # Mixed scaling across monitors is the classic reason a window lands
+        # somewhere its owner did not intend.
+        ratios = {sc.devicePixelRatio() for sc in screens}
+        dpis = {round(sc.logicalDotsPerInch()) for sc in screens}
+        if len(ratios) > 1 or len(dpis) > 1:
+            logger.warning(f"  screens differ in scaling (ratios={sorted(ratios)}, "
+                           f"dpi={sorted(dpis)}) — window placement may be off")
+    except Exception as e:
+        logger.warning(f"Could not read the display environment: {e}")
+
+
 # ════════════════════════════════════════════════════════════════
 #  Screen-capture exclusion
 # ════════════════════════════════════════════════════════════════
@@ -195,8 +230,22 @@ if HAS_PYQT:
             super().showPopup()
             # Its own HWND, so it needs its own exclusion — a dropdown listing
             # answer styles is not something to leak into a screen share.
-            exclude_from_capture(popup)
+            hidden = exclude_from_capture(popup)
             popup.raise_()
+            # Logged on both sides: an "opened" with no "chose" after it is
+            # the signature of a list the user could see but not use, which is
+            # otherwise indistinguishable from never having clicked at all.
+            g = popup.frameGeometry()
+            logger.info(f"Dropdown opened: {self.objectName() or 'combo'} "
+                        f"({self.count()} items, showing '{self.currentText()}') "
+                        f"at ({g.x()},{g.y()}) {g.width()}x{g.height()} "
+                        f"| onTop={bool(popup.windowFlags() & Qt.WindowStaysOnTopHint)} "
+                        f"| hidden_from_capture={hidden}")
+
+        def hidePopup(self):
+            super().hidePopup()
+            logger.debug(f"Dropdown closed: {self.objectName() or 'combo'} "
+                         f"on '{self.currentText()}'")
 
 
     class BlankIconProvider(QFileIconProvider):
@@ -590,6 +639,7 @@ if HAS_PYQT:
             lay.addWidget(lang_label)
 
             self.lang_combo = TopMostComboBox()
+            self.lang_combo.setObjectName("answer language")
             self.lang_combo.addItems(languages)
             if current_language in languages:
                 self.lang_combo.setCurrentText(current_language)
@@ -627,6 +677,7 @@ if HAS_PYQT:
             lay.addWidget(style_label)
 
             self.style_combo = TopMostComboBox()
+            self.style_combo.setObjectName("answer style")
             self.style_combo.addItems(styles)
             if current_style in styles:
                 self.style_combo.setCurrentText(current_style)
@@ -647,6 +698,7 @@ if HAS_PYQT:
             lay.addWidget(audio_label)
 
             self.audio_combo = TopMostComboBox()
+            self.audio_combo.setObjectName("audio source")
             self.audio_combo.setStyleSheet(self.lang_combo.styleSheet())
             for device_id, device_label in owner.audio_devices:
                 self.audio_combo.addItem(device_label, device_id)
@@ -801,8 +853,8 @@ if HAS_PYQT:
             # backing out is still a hint about where the files are.
             try:
                 SetupDialog._last_browse_dir = dlg.directory().absolutePath()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not read the picker's directory: {e}")
             logger.info(f"Upload: picker closed (accepted={bool(accepted)}, "
                         f"dir={SetupDialog._last_browse_dir})")
             if not accepted:
@@ -877,16 +929,20 @@ if HAS_PYQT:
             self.style_hint.setText(self.STYLE_HINTS.get(text, ""))
 
         def _style_changed(self, text):
+            logger.info(f"Setup: answer style chosen -> {text}")
             self._describe_style(text)
             self.on_changed("style", text)
             self.status.setText(f"Answer style: {text}.")
 
         def _audio_changed(self, index):
             device_id = self.audio_combo.itemData(index)
+            logger.info(f"Setup: audio source chosen -> {device_id} "
+                        f"({self.audio_combo.currentText()})")
             self.on_changed("audio_device", device_id)
             self.status.setText("Audio source: {}".format(self.audio_combo.currentText()))
 
         def _language_changed(self, text):
+            logger.info(f"Setup: answer language chosen -> {text}")
             self.on_changed("language", text)
             self.status.setText(f"Code answers will use {text}."
                                 if text != "Auto" else
@@ -1071,6 +1127,7 @@ class GhostOverlay:
     # ────────────────────────────────────────────────
     def _create_window(self):
         self.app = QApplication.instance() or QApplication(sys.argv)
+        _log_display_environment(self.app)
 
         # Catch every window the app opens — tooltips and dropdowns included.
         self._capture_shield = CaptureShield()
@@ -1474,6 +1531,14 @@ class GhostOverlay:
         x = max(screen.left() + 4, min(x, screen.right() - w - 4))
         y = max(screen.top() + 4, min(geo.y(), screen.bottom() - h - 4))
         dlg.move(x, y)
+        side = "right of" if x > geo.x() else "left of"
+        fits = y + h <= screen.bottom() and x + w <= screen.right()
+        logger.info(f"Setup panel: {w}x{h} at ({x},{y}), {side} the overlay "
+                    f"| work area {screen.width()}x{screen.height()} "
+                    f"| fits on screen={fits}")
+        if not fits:
+            logger.warning("Setup panel does not fit the work area — some of "
+                           "it is off-screen and there is no scroll area yet")
         self._setup_dialog.show()
         self._setup_dialog.raise_()
         self._setup_dialog.activateWindow()
@@ -1524,6 +1589,8 @@ class GhostOverlay:
             self.signals.toggle_op.emit()
 
     def _slot_toggle_visible(self):
+        logger.info(f"Overlay visibility toggled (was "
+                    f"{'visible' if self.window and self.window.isVisible() else 'hidden'})")
         if not self.window:
             return
         if self.window.isVisible():
@@ -1632,7 +1699,11 @@ class GhostOverlay:
             saved = json.loads(self._geometry_path().read_text(encoding="utf-8"))
             sx, sy = int(saved["x"]), int(saved["y"])
             sw, sh = int(saved["w"]), int(saved["h"])
-        except Exception:
+        except FileNotFoundError:
+            logger.info("No saved overlay position — opening at the default")
+            return x, y, w, h
+        except Exception as e:
+            logger.warning(f"Saved overlay position unreadable ({e}) — using the default")
             return x, y, w, h
 
         sw = max(ResizeGrip.MIN_W, sw)

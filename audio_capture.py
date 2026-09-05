@@ -170,8 +170,8 @@ class AudioCapture:
                 default = sd.default.device[0]
                 if default is not None and default >= 0:
                     return default
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"No usable default input device: {e}")
             raise RuntimeError("No valid audio input device found")
         
         # Prioritize monitor / stereo mix if available
@@ -576,8 +576,8 @@ class AudioCapture:
             try:
                 self._stream.stop()
                 self._stream.close()
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Closing the input stream failed: {e}")
         if self._arecord_proc:
             self._arecord_proc.terminate()
             self._arecord_proc = None

@@ -49,7 +49,7 @@ except Exception as _log_err:                      # never die over logging
     print(f"File logging unavailable: {_log_err}")
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, config.LOG_LEVEL, logging.INFO),
     format='%(asctime)s [%(name)s) %(levelname)s] %(message)s',
     datefmt='%H:%M:%S',
     handlers=_log_handlers
@@ -82,6 +82,67 @@ if _picker_crashed:
     logger.warning("The file picker crashed the app last time — using the "
                    "native Windows picker from now on (it is NOT hidden from "
                    "screen capture)")
+
+
+def log_environment():
+    """
+    Everything about this machine worth knowing before reading the rest of
+    the log.
+
+    Written for the case where the app is misbehaving on someone else's
+    computer and all we will ever get back is this file. Nearly every
+    machine-specific failure so far — a decommissioned model, an unwritable
+    folder, a dropdown that would not open — came down to something here, and
+    none of it was recorded. Values of secrets are never logged, only whether
+    they are set and how long they are, which is enough to tell a missing key
+    from a truncated one.
+    """
+    import platform
+
+    logger.info("--- environment ---")
+    logger.info(f"  app          : {'frozen exe' if getattr(sys, 'frozen', False) else 'source'}"
+                f" | {sys.executable}")
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        logger.info(f"  bundle       : {sys._MEIPASS}")
+    logger.info(f"  python       : {platform.python_version()} ({platform.machine()})")
+
+    try:
+        v = sys.getwindowsversion()
+        # WDA_EXCLUDEFROMCAPTURE needs build 19041. Below that the overlay is
+        # plainly visible in a screen share, which is worth knowing up front
+        # rather than discovering mid-interview.
+        wda = "supported" if v.build >= 19041 else "NOT SUPPORTED (needs build 19041)"
+        logger.info(f"  windows      : {platform.version()} build {v.build} — "
+                    f"capture hiding {wda}")
+    except Exception:
+        logger.info(f"  platform     : {platform.platform()}")
+
+    logger.info(f"  working dir  : {os.getcwd()}")
+    logger.info(f"  app data     : {_file_context.writable_base()}")
+    logger.info(f"  log file     : {_log_path if '_log_path' in globals() else 'n/a'}")
+
+    for note in getattr(config, "STARTUP_NOTES", []):
+        logger.info(f"  config       : {note}")
+
+    def _key(name, value):
+        return f"{name}={'set, ' + str(len(value)) + ' chars' if value else 'MISSING'}"
+
+    logger.info("  keys         : " + ", ".join([
+        _key("GROQ_API_KEY", config.GROQ_API_KEY),
+        _key("GROQ_LLM_API_KEY", config.GROQ_LLM_API_KEY)]))
+    logger.info(f"  models       : llm={config.GROQ_LLM_MODEL} "
+                f"vision={config.GROQ_LLM_VISION_MODEL} stt={config.GROQ_WHISPER_MODEL}")
+    logger.info(f"  answers      : temp={config.LLM_TEMPERATURE} "
+                f"context_cap={config.MAX_CONTEXT_CHARS} history={config.KEEP_HISTORY}")
+    logger.info(f"  vad          : threshold={config.SILENCE_THRESHOLD} "
+                f"silence={config.SILENCE_DURATION}s "
+                f"utterance={config.MIN_UTTERANCE_SEC}-{config.MAX_UTTERANCE_SEC}s "
+                f"ring={config.AUDIO_RING_SEC}s grab={config.GRAB_SECONDS}s")
+
+    from audio_capture import SOUNDCARD_AVAILABLE, SD_AVAILABLE
+    logger.info(f"  audio libs   : soundcard={SOUNDCARD_AVAILABLE} "
+                f"sounddevice={SD_AVAILABLE}")
+    logger.info("--- end environment ---")
 
 
 # A JPEG starts FF D8; the screen capture falls back to PNG when PIL is
@@ -499,11 +560,7 @@ class GhostInterviewAgent:
         logger.info("=" * 50)
         logger.info("Ghastly AI — Initializing")
         logger.info("=" * 50)
-        # Say where data actually went. The chosen folder is resolved before
-        # logging exists, so without this line a support question ("where are
-        # my uploads?") has no answer anywhere.
-        import file_context
-        logger.info(f"App data folder: {file_context.writable_base()}")
+        log_environment()
         
         # Load context
         logger.info("Loading context...")

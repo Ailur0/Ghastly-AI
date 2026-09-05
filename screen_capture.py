@@ -77,8 +77,8 @@ class HotkeyListener:
         if self._registered:
             try:
                 keyboard.remove_hotkey(self.hotkey)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Unregistering '{self.hotkey}' failed: {e}")
             self._registered = False
 
 
