@@ -117,11 +117,6 @@ OLLAMA_MODEL = GROQ_LLM_MODEL
 OLLAMA_VISION_MODEL = GROQ_LLM_VISION_MODEL
 OLLAMA_BASE_URL = GROQ_LLM_BASE_URL
 
-# === Vision LLM (OpenRouter) ===
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_VISION_MODEL = os.environ.get("OPENROUTER_VISION_MODEL", "openrouter/free")
-OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-
 # === Screen Capture ===
 SCREEN_CAPTURE_HOTKEY = os.environ.get("SCREEN_CAPTURE_HOTKEY", "ctrl+shift+h")
 SCREEN_CAPTURE_PROMPT = (

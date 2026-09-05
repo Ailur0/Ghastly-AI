@@ -115,6 +115,36 @@ def transcribe_groq(
         return {"text": "", "latency_ms": latency_ms, "error": str(e)}
 
 
+def describe_stt_error(error: str) -> str:
+    """
+    Turn a transcribe() error into a line worth showing the user.
+
+    The distinction earns its keep because the response differs: a rejected
+    key needs a new key, a rate limit needs a pause, a timeout needs nothing
+    but patience. Until this existed, every one of them reached the user as
+    silence — the pill went back to "listening" and the app simply never
+    answered again.
+    """
+    if not error:
+        return ""
+
+    lowered = error.lower()
+    if error.startswith(("HTTP 401", "HTTP 403")):
+        return "Speech-to-text rejected the API key — check GROQ_API_KEY."
+    if error.startswith("HTTP 429"):
+        return "Speech-to-text is rate limited — it should resume shortly."
+    if error.startswith("HTTP 5"):
+        return "Speech-to-text is down at the provider — nothing to fix here."
+    if "timeout" in lowered or "timed out" in lowered:
+        return "Speech-to-text timed out — check the connection."
+    if any(w in lowered for w in ("connection", "resolve", "network", "unreachable")):
+        return "Speech-to-text could not be reached — check the connection."
+    if error.startswith("HTTP "):
+        # Keep the status line, drop the response body.
+        return f"Speech-to-text failed ({error.split(':', 1)[0]})."
+    return f"Speech-to-text failed: {error[:120]}"
+
+
 def transcribe(audio: np.ndarray, sample_rate: int = 16000, **kwargs) -> dict:
     """
     Main transcribe function — routes to Groq API.

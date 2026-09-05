@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from audio_capture import AudioCapture
-from transcribe import transcribe, is_question
+from transcribe import transcribe, is_question, describe_stt_error
 from llm_query import (
     query_ollama_stream, query_ollama_vision_stream, tokens_for_style
 )
@@ -150,6 +150,13 @@ class GhostInterviewAgent:
         # Last question asked, so the retry button has something to re-run.
         self._last_question = None
 
+        # An outage produces one failure per utterance. The pill tracks every
+        # one, but the panel only hears about a given problem once a minute —
+        # otherwise a dropped connection writes a wall of identical lines over
+        # the answer you were reading.
+        self._last_stt_error = None
+        self._last_stt_error_at = 0.0
+
         # One answer owns the panel at a time, and the newest question wins.
         # Each answer carries a ticket; the moment a newer one is claimed the
         # older ticket goes stale and every write it attempts is dropped, so
@@ -252,6 +259,30 @@ class GhostInterviewAgent:
         elif kind == "audio_device":
             self.context_mgr.set_audio_device(value)
             self.restart_audio(value)
+
+    STT_ERROR_REPEAT_SEC = 60
+
+    def _report_stt_error(self, error: str) -> None:
+        """
+        Tell the user speech-to-text failed, instead of letting it read as
+        silence.
+
+        This is the failure that used to be invisible: transcribe() hands back
+        an empty string and an `error` nobody looked at, so a rejected key, an
+        exhausted quota or a dead connection all arrived as "nothing was said"
+        — the pill went back to listening and the app simply never answered
+        again for the rest of the interview.
+        """
+        message = describe_stt_error(error)
+        logger.error(f"STT failed: {error}")
+        self.overlay.set_status("error")
+
+        now = time.time()
+        if (message != self._last_stt_error
+                or now - self._last_stt_error_at > self.STT_ERROR_REPEAT_SEC):
+            self.overlay.notice(message)
+            self._last_stt_error = message
+            self._last_stt_error_at = now
 
     def _rebind_hotkey(self, label: str, new_val: str):
         """
@@ -435,13 +466,6 @@ class GhostInterviewAgent:
         if not config.OLLAMA_API_KEY or config.OLLAMA_API_KEY == "your-ollama-api-key":
             logger.warning("Ollama API key not set! Edit config.py")
 
-        # Verify OpenRouter API key is set (used for screen-capture vision queries)
-        if not config.OPENROUTER_API_KEY:
-            logger.warning(
-                "OpenRouter API key not set! Screen capture feature will not work "
-                "until OPENROUTER_API_KEY is set in .env"
-            )
-
     def process_question(self, question_text: str):
         """
         Process a single question: send to LLM, stream answer to overlay.
@@ -564,7 +588,16 @@ class GhostInterviewAgent:
             self.overlay.set_status("transcribing")
 
             result = transcribe(audio, sample_rate=config.SAMPLE_RATE)
+
+            # Say what actually went wrong. Reporting a failed request as
+            # "nothing was said" sent the user looking at their audio device
+            # when the real answer was a rejected key.
+            if result.get("error"):
+                self._report_stt_error(result["error"])
+                return
+
             text = result["text"].strip()
+            self._last_stt_error = None
             if not text or len(text) < 3:
                 logger.info("Grab found no speech in the window")
                 self.overlay.set_status("listening")
@@ -714,9 +747,16 @@ class GhostInterviewAgent:
                     sample_rate=config.SAMPLE_RATE,
                 )
                 
+                if result.get("error"):
+                    self._report_stt_error(result["error"])
+                    continue
+
                 text = result["text"].strip()
                 stt_latency = result.get("latency_ms", 0)
-                
+
+                # A transcription got through, so whatever was wrong is over.
+                self._last_stt_error = None
+
                 if not text or len(text) < 3:
                     logger.debug(f"Empty transcription, skipping (STT: {stt_latency:.0f}ms)")
                     self.overlay.set_status("listening")

@@ -1494,15 +1494,20 @@ class GhostOverlay:
             logger.info("Overlay shown")
 
     def _toggle_opacity(self):
-        """Toggle overlay opacity between opaque and translucent (sun/moon icon)."""
+        """
+        Toggle overlay opacity between opaque and translucent.
+
+        The glyph stays put and only the tooltip moves. It used to swap in
+        ☀️/🌙 on the first click, which dropped a pair of colour emoji into an
+        otherwise monochrome bar — and every other button here names its
+        function rather than its state.
+        """
         self._opaque = not self._opaque
         if self._opaque:
-            self.opacity_btn.setText("☀️")
             self.opacity_btn.setToolTip("Opaque — click to make translucent")
             self.window.setWindowOpacity(self.OPACITY_OPAQUE)
             logger.info("Overlay opacity: opaque")
         else:
-            self.opacity_btn.setText("🌙")
             self.opacity_btn.setToolTip("Translucent — click to make opaque")
             self.window.setWindowOpacity(self.OPACITY_TRANSLUCENT)
             logger.info("Overlay opacity: translucent")
