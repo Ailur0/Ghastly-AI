@@ -418,6 +418,10 @@ if HAS_PYQT:
         is not our window, so we cannot hide it from capture.
         """
 
+        # Where the picker last looked, so a second upload does not start
+        # over at the top. Class-level: shared by every panel instance.
+        _last_browse_dir = None
+
         LABEL_CSS = ("color:#A5B4FC;font-family:'Segoe UI',sans-serif;"
                      "font-size:11px;font-weight:700;letter-spacing:0.6px;"
                      "background:transparent;border:none;")
@@ -510,8 +514,16 @@ if HAS_PYQT:
                     padding: 4px;
                 }
                 QListWidget::item { padding: 3px 4px; border-radius: 4px; }
-                QListWidget::item:selected { background: rgba(165,180,252,0.20); color:#F4F4F5; }
+                QListWidget::item:hover { background: rgba(255,255,255,0.06); }
+                QListWidget::item:selected {
+                    background: rgba(165,180,252,0.30);
+                    border: 1px solid rgba(165,180,252,0.55);
+                    color: #FFFFFF;
+                }
             """)
+            # Which row Remove will take has to be obvious, so the selection
+            # drives the button's enabled state as well as the highlight.
+            self.file_list.itemSelectionChanged.connect(self._sync_remove_enabled)
             lay.addWidget(self.file_list)
 
             row = QHBoxLayout()
@@ -657,8 +669,19 @@ if HAS_PYQT:
                 placeholder = QListWidgetItem("No documents yet — add a resume to start.")
                 placeholder.setFlags(Qt.NoItemFlags)
                 self.file_list.addItem(placeholder)
-            self.remove_btn.setEnabled(bool(entries))
+            else:
+                # Nothing was selected on open, so Remove was enabled but
+                # answered every click with "select a document first" — which
+                # reads exactly like a dead button. Start on the first row.
+                self.file_list.setCurrentRow(0)
             self.clear_btn.setEnabled(bool(entries))
+            self._sync_remove_enabled()
+
+        def _sync_remove_enabled(self):
+            """Remove is only meaningful with a row selected — say so by
+            being disabled rather than by refusing the click afterwards."""
+            item = self.file_list.currentItem()
+            self.remove_btn.setEnabled(bool(item and item.data(Qt.UserRole)))
 
         def _pick_files(self):
             try:
@@ -698,12 +721,27 @@ if HAS_PYQT:
                 # shell-populated sidebar, and start somewhere plain.
                 dlg.setOption(QFileDialog.DontUseCustomDirectoryIcons, True)
                 dlg.setIconProvider(BlankIconProvider())
-                home = QStandardPaths.writableLocation(QStandardPaths.HomeLocation)
-                downloads = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
-                dlg.setSidebarUrls([QUrl.fromLocalFile(p)
-                                    for p in (home, downloads) if p])
-                if home:
-                    dlg.setDirectory(home)
+                # Desktop and Documents are redirected into OneDrive on this
+                # kind of setup, so they are not reachable by browsing down
+                # from home the way someone expects — they have to be offered
+                # directly. Downloads and Desktop are where a resume actually
+                # lives, so lead with them.
+                places, seen = [], set()
+                for loc in (QStandardPaths.DownloadLocation,
+                            QStandardPaths.DesktopLocation,
+                            QStandardPaths.DocumentsLocation,
+                            QStandardPaths.HomeLocation):
+                    path = QStandardPaths.writableLocation(loc)
+                    if path and path not in seen and os.path.isdir(path):
+                        seen.add(path)
+                        places.append(path)
+                if places:
+                    dlg.setSidebarUrls([QUrl.fromLocalFile(p) for p in places])
+                    # Reopen where they left off; otherwise the first place
+                    # that exists, which is Downloads on a normal machine.
+                    start = SetupDialog._last_browse_dir
+                    dlg.setDirectory(start if start and os.path.isdir(start)
+                                     else places[0])
             dlg.setNameFilter("Documents (*.pdf *.docx *.txt *.md *.json *.csv);;All files (*)")
 
             # Exclude it once it is on screen. Queued rather than show()-then-
@@ -721,7 +759,14 @@ if HAS_PYQT:
             logger.info("Upload: opening the file picker")
             accepted = dlg.exec_()
             file_context.clear_picker_flag()
-            logger.info(f"Upload: picker closed (accepted={bool(accepted)})")
+            # Remember the folder even on cancel — browsing somewhere and
+            # backing out is still a hint about where the files are.
+            try:
+                SetupDialog._last_browse_dir = dlg.directory().absolutePath()
+            except Exception:
+                pass
+            logger.info(f"Upload: picker closed (accepted={bool(accepted)}, "
+                        f"dir={SetupDialog._last_browse_dir})")
             if not accepted:
                 return
 
@@ -1370,8 +1415,22 @@ class GhostOverlay:
         else:
             self._setup_dialog.refresh_files()
 
+        # Beside the overlay rather than under it: stacked, the panel pushes
+        # itself off the bottom of the screen on a short display and covers
+        # the answer the overlay is there to show.
+        dlg = self._setup_dialog
+        dlg.adjustSize()
         geo = self.window.geometry()
-        self._setup_dialog.move(geo.x(), geo.y() + geo.height() + 8)
+        screen = self.app.primaryScreen().availableGeometry()
+        gap = 8
+        w, h = dlg.frameGeometry().width(), dlg.frameGeometry().height()
+
+        x = geo.x() + geo.width() + gap                  # to the right
+        if x + w > screen.right():
+            x = geo.x() - w - gap                        # no room — go left
+        x = max(screen.left() + 4, min(x, screen.right() - w - 4))
+        y = max(screen.top() + 4, min(geo.y(), screen.bottom() - h - 4))
+        dlg.move(x, y)
         self._setup_dialog.show()
         self._setup_dialog.raise_()
         self._setup_dialog.activateWindow()
