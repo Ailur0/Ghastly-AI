@@ -173,6 +173,32 @@ def exclude_process_windows() -> int:
 
 
 if HAS_PYQT:
+    class TopMostComboBox(QComboBox):
+        """
+        A dropdown that opens in front of the panel holding it.
+
+        The overlay and the setup panel are both WindowStaysOnTop. A combo's
+        popup is a separate top-level window and is not, so Windows draws the
+        panel over it — measured at 100% of the popup covered. The list is
+        still open and, being a Qt.Popup, still holds the mouse grab, so it
+        quietly takes the clicks meant for it. From the outside the dropdown
+        appears and simply refuses to change, which is exactly the same shape
+        as the file-picker bug: the window is there, just underneath.
+
+        The flag goes on before the popup is shown. Setting it afterwards
+        re-creates the native window, which drops the grab.
+        """
+
+        def showPopup(self):
+            popup = self.view().window()
+            popup.setWindowFlags(popup.windowFlags() | Qt.WindowStaysOnTopHint)
+            super().showPopup()
+            # Its own HWND, so it needs its own exclusion — a dropdown listing
+            # answer styles is not something to leak into a screen share.
+            exclude_from_capture(popup)
+            popup.raise_()
+
+
     class BlankIconProvider(QFileIconProvider):
         """
         Hands back nothing instead of asking Windows for file icons.
@@ -563,7 +589,7 @@ if HAS_PYQT:
             lang_label.setStyleSheet(self.LABEL_CSS)
             lay.addWidget(lang_label)
 
-            self.lang_combo = QComboBox()
+            self.lang_combo = TopMostComboBox()
             self.lang_combo.addItems(languages)
             if current_language in languages:
                 self.lang_combo.setCurrentText(current_language)
@@ -600,7 +626,7 @@ if HAS_PYQT:
             style_label.setStyleSheet(self.LABEL_CSS)
             lay.addWidget(style_label)
 
-            self.style_combo = QComboBox()
+            self.style_combo = TopMostComboBox()
             self.style_combo.addItems(styles)
             if current_style in styles:
                 self.style_combo.setCurrentText(current_style)
@@ -620,7 +646,7 @@ if HAS_PYQT:
             audio_label.setStyleSheet(self.LABEL_CSS)
             lay.addWidget(audio_label)
 
-            self.audio_combo = QComboBox()
+            self.audio_combo = TopMostComboBox()
             self.audio_combo.setStyleSheet(self.lang_combo.styleSheet())
             for device_id, device_label in owner.audio_devices:
                 self.audio_combo.addItem(device_label, device_id)
