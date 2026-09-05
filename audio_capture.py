@@ -224,14 +224,30 @@ class AudioCapture:
             self._ring.clear()
             self._ring_samples = 0
 
-    def grab_recent(self, seconds: float):
+    def grab_recent(self, seconds: float, gap_sec: float = None):
         """
-        The last `seconds` of audio, or None if barely anything is buffered.
+        The last thing that was said, from within the last `seconds`.
 
-        Unlike the VAD path this ignores speech boundaries entirely: it
-        returns the window as heard, silence included, because the press
-        that asked for it is the only intent signal needed.
+        The window is a ceiling, not the answer. Taking a flat `seconds` of
+        audio meant the grab swept up whatever else happened to be in it —
+        a live run produced "How would you design a rate limiter for a public
+        API? How would you design a rate limiter for a..." because the same
+        question had been asked twice inside twenty seconds, and the model was
+        handed both.
+
+        So the slice is trimmed back to the most recent run of speech: skip
+        the silence while the key was being pressed, then walk back to the
+        first real pause and cut there. `gap_sec` is deliberately longer than
+        the VAD's own silence threshold — a question with a pause in the
+        middle is exactly what this hotkey exists to rescue, so it must not
+        cut at the same place the VAD already did.
+
+        Falls back to the full window whenever trimming would leave too
+        little to transcribe.
         """
+        if gap_sec is None:
+            gap_sec = self.silence_duration * 1.5
+
         wanted = int(self.sample_rate * seconds)
         with self._ring_lock:
             if self._ring_samples < self.sample_rate * self.min_utterance_sec:
@@ -240,8 +256,55 @@ class AudioCapture:
                     f"buffered (floor {self.min_utterance_sec}s)")
                 return None
             frames = list(self._ring)
-        combined = np.concatenate(frames)
+
+        window = frames[-int(seconds / 0.1):] if len(frames) > seconds / 0.1 else frames
+        trimmed = self._trim_to_last_utterance(window, gap_sec)
+
+        floor = int(self.sample_rate * self.min_utterance_sec)
+        if trimmed is not None and len(trimmed) >= floor:
+            full = sum(len(f) for f in window)
+            logger.info(f"Grab trimmed {full / self.sample_rate:.1f}s of window "
+                        f"to the last {len(trimmed) / self.sample_rate:.1f}s of speech")
+            return trimmed
+
+        combined = np.concatenate(window)
         return combined[-wanted:] if len(combined) > wanted else combined
+
+    def _trim_to_last_utterance(self, window, gap_sec: float):
+        """
+        The trailing run of speech in `window`, or None if there isn't one.
+
+        Walks backwards: past the silence while the key was pressed, then
+        through the speech, stopping at the first pause of `gap_sec`.
+        """
+        if not window:
+            return None
+
+        loud = [self._rms(f) > self.silence_threshold for f in window]
+        gap_frames = max(1, int(gap_sec / 0.1))
+
+        end = len(loud) - 1
+        while end >= 0 and not loud[end]:      # trailing silence
+            end -= 1
+        if end < 0:
+            return None                        # the whole window is quiet
+
+        start, run = end, 0
+        while start >= 0:
+            if loud[start]:
+                run = 0
+            else:
+                run += 1
+                if run >= gap_frames:
+                    start += run               # step back over the pause
+                    break
+            start -= 1
+        start = max(0, start)
+
+        # A little of the pause before it, so the first word is not clipped
+        # for the same reason the VAD keeps pre-roll.
+        start = max(0, start - 3)
+        return np.concatenate(window[start:end + 1])
     
     def _audio_callback(self, indata, frames, time_info, status):
         """PortAudio callback — called for each audio frame."""
