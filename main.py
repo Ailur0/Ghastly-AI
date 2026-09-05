@@ -804,7 +804,13 @@ class GhostInterviewAgent:
                     continue
                 if not self.is_running:
                     break
-                
+
+                # Anything that queued up behind a slow transcription is
+                # already stale — answering it would land under a question
+                # the interviewer has moved past.
+                audio_chunk = self.audio.newest_pending(audio_chunk)
+
+
                 # Transcribe via Groq API
                 self.overlay.set_status("transcribing")
                 logger.info("Transcribing via Groq Whisper API...")

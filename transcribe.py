@@ -184,8 +184,21 @@ EMBEDDED_ASKS = (
 )
 
 MIN_STARTER_WORDS = 2      # "Why Python?" is a real question
-MIN_QMARK_WORDS = 5        # but "Hmm?" and "You too, right?" are not
+# "Hmm?" and "You too, right?" are not — but five was cutting real ones:
+# "Any questions for me?" and "Big O of that?" are four words each, and
+# neither opens with a starter.
+MIN_QMARK_WORDS = 4
 MIN_EMBEDDED_WORDS = 4
+
+# Matched on word boundaries, which a plain startswith() is not: it read
+# "Washington is where I grew up" as a question because it begins with "was",
+# and "doesn't matter, let's move on" because it begins with "does". Both
+# cost an answer over the panel while the interviewer was still talking.
+# Longest alternative first, so "is that" wins over a prefix of itself.
+_STARTER_RE = re.compile(
+    r"^(?:" + "|".join(re.escape(s) for s in
+                       sorted(QUESTION_STARTERS, key=len, reverse=True)) + r")\b"
+)
 
 
 def is_question(text: str) -> bool:
@@ -205,15 +218,12 @@ def is_question(text: str) -> bool:
     lowered = cleaned.lower().strip(" .,!?\"'“”‘’-")
     words = [w for w in re.split(r"[^\w']+", lowered) if w]
 
+    # Covers "Thank you." with a full stop, "Bye!", "Okay?" too — the
+    # punctuation is stripped out of `lowered` before this runs.
     if not words or lowered in FILLER:
         return False
 
-    # "Thank you." with a full stop, "Bye!", "Okay?" — filler with punctuation.
-    if len(words) <= 2 and lowered in FILLER:
-        return False
-
-    starts_with_ask = any(lowered.startswith(starter) for starter in QUESTION_STARTERS)
-    if starts_with_ask and len(words) >= MIN_STARTER_WORDS:
+    if _STARTER_RE.match(lowered) and len(words) >= MIN_STARTER_WORDS:
         return True
 
     if cleaned.endswith("?") and len(words) >= MIN_QMARK_WORDS:

@@ -183,8 +183,17 @@ MAX_UTTERANCE_SEC = float(os.environ.get("MAX_UTTERANCE_SEC", "30"))
 AUDIO_WATCHDOG_SEC = float(os.environ.get("AUDIO_WATCHDOG_SEC", "15"))
 SAMPLE_RATE = 16000  # Whisper expects 16kHz
 CHUNK_DURATION = 3  # seconds per audio chunk
-SILENCE_THRESHOLD = 0.01  # RMS threshold for silence detection
-SILENCE_DURATION = 1.0  # seconds of silence before processing chunk
+# The whole voice-activity gate, in two numbers. Both settable, because when
+# they are wrong the symptom is "nothing happens at all" and there is nothing
+# in the UI to adjust: a quiet interviewer never crosses the threshold and no
+# utterance is ever emitted, while a noisy line sits above it permanently and
+# the gate never closes.
+#
+# Raise SILENCE_THRESHOLD on a noisy line; lower it for a quiet one. Lower
+# SILENCE_DURATION for faster answers at the cost of chopping questions that
+# pause in the middle; raise it for the opposite trade.
+SILENCE_THRESHOLD = float(os.environ.get("SILENCE_THRESHOLD", "0.01"))
+SILENCE_DURATION = float(os.environ.get("SILENCE_DURATION", "1.0"))
 # How far back the grab hotkey reaches. Long enough for a question asked
 # slowly with a pause in the middle, short enough not to drag in the answer
 # to the previous one.

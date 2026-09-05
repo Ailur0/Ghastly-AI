@@ -536,6 +536,28 @@ class AudioCapture:
             logger.debug(f"Could not read the default speaker: {e}")
             return False
 
+    def newest_pending(self, chunk):
+        """
+        Given a chunk just dequeued, return the newest one available and throw
+        the rest away.
+
+        The listening loop transcribes inline, so one slow STT call lets
+        utterances pile up behind it in an unbounded queue — and every one is
+        then transcribed and answered in order, arriving under a question the
+        interviewer has long since moved past. Only the newest is still worth
+        answering, which is the same rule the answer panel already follows.
+        """
+        dropped = 0
+        try:
+            while True:
+                chunk = self.audio_queue.get_nowait()
+                dropped += 1
+        except queue.Empty:
+            pass
+        if dropped:
+            logger.info(f"Skipped {dropped} queued utterance(s) — the newest wins")
+        return chunk
+
     def get_audio_chunk(self, timeout=30):
         """Get the next audio chunk from the queue. Blocks until available."""
         try:

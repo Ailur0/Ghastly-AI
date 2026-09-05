@@ -11,7 +11,7 @@ System Audio ─┬→ VAD (silence detection) → Whisper STT → Question Filt
               │                                                          │
               └→ 45s rolling buffer → grab hotkey → Whisper STT ─────────┤ (no filter)
                                                                          │
-                          Context+State → Ollama LLM (streaming) → Ghost Overlay
+                          Context+State → Groq LLM (streaming) → Ghost Overlay
                                                                          ↓
                                                             WDA_EXCLUDEFROMCAPTURE
                                                             (invisible to capture)
@@ -46,9 +46,10 @@ cp .env.example .env
 |---|---|
 | `GROQ_API_KEY` | Groq API key (Whisper STT) |
 | `GROQ_WHISPER_MODEL` | STT model (default: `whisper-large-v3`) |
-| `OLLAMA_API_KEY` | Ollama cloud API key |
-| `OLLAMA_MODEL` | Answer model (default: `nemotron-3-super`) |
-| `OLLAMA_VISION_MODEL` | Model for screen captures (default: `gemma4:31b` — the only free Ollama model that accepts images) |
+| `GROQ_LLM_API_KEY` | Groq key for answers (can be the same as above) |
+| `GROQ_LLM_MODEL` | Answer model (default: `openai/gpt-oss-120b`) |
+| `GROQ_LLM_VISION_MODEL` | Model for screen captures (default: `qwen/qwen3.8-27b` — check `GET /openai/v1/models`, the llama vision models were decommissioned) |
+| `LLM_TEMPERATURE` | Answer variability (default: `0.5`; raise if answers sound canned) |
 | `SCREEN_CAPTURE_HOTKEY` | Send the screen to the vision model (default: `ctrl+shift+h`) |
 | `PANIC_HOTKEY` | Hide / show the overlay without quitting (default: `ctrl+shift+space`) |
 | `OPACITY_HOTKEY` | Toggle opaque / translucent (default: `ctrl+shift+o`) |
@@ -59,19 +60,20 @@ cp .env.example .env
 | `ANSWER_STYLE` | Pins the answer style (`Balanced`, `Snippet only`, `Text only`, `Full walkthrough`) |
 | `AUDIO_DEVICE` | Pins the capture device; otherwise picked in the setup panel |
 | `MIN_UTTERANCE_SEC` | Audio shorter than this never reaches the STT API (default: `1.2`) |
+| `MAX_UTTERANCE_SEC` | And a ceiling, so continuous sound cannot hold the gate open forever (default: `30`) |
+| `SILENCE_THRESHOLD` | RMS above which audio counts as speech (default: `0.01`; raise on a noisy line) |
+| `SILENCE_DURATION` | Silence that ends an utterance (default: `1.0`; lower for speed, raise to stop chopping) |
+| `MAX_CONTEXT_CHARS` | How much of your documents reaches the model (default: `16000`) |
 | `LOG_FILE` | Log path, relative to the app (default: `logs/ghastly.log`) |
 
-`OPENROUTER_API_KEY` / `OPENROUTER_VISION_MODEL` are only needed if you switch
-screen captures back to OpenRouter — its free tier caps out at 50 requests a
-day, which is why captures go through Ollama instead.
-
-Overlay appearance (opacity, position, colors) is set in `config.py`, not `.env`.
+Overlay size, position and opacity are set in `config.py`. Its colours and
+fonts are not — those live in `class T` at the top of `ghost_overlay.py`.
 
 ### 3. Give it your background
 
 Two ways, and they stack:
 
-- **The setup panel** (📎 in the command bar) — attach a resume, a job
+- **The setup panel** (⚙ in the command bar) — attach a resume, a job
   description, notes. PDF, DOCX, and plain-text formats are read directly.
   Uploads take effect on the next question, no restart.
 - **`context/interview-context.md`** — a hand-written profile, if you prefer.
@@ -89,11 +91,11 @@ the interviewer asks a question, the answer appears in the panel.
 
 | Control | What it does |
 |---|---|
-| ☀️ / 🌙 | Opaque or translucent (`Ctrl+Shift+O`) |
-| ℹ️ | Lists the active hotkeys |
-| 📎 | Setup panel — documents, answer language, answer style, audio source |
-| ↻ | Answer the last question again (`Ctrl+Shift+R`) |
-| ● | Close |
+| ◐ | Opaque or translucent (`Ctrl+Shift+O`) |
+| ⚙ | Setup panel — documents, answer language, answer style, audio source, hotkeys |
+| ↻ | Answer the last question again, or re-read the last screen capture (`Ctrl+Shift+R`) |
+| ⓘ | Click for the hotkey list |
+| ✕ | Close |
 | Corner squares | Drag to resize |
 | Double-click the bar | Collapse / expand the answer panel |
 | Ask box | Type a question and press Enter |
@@ -144,7 +146,7 @@ that is streaming.
 |---|---|---|
 | Audio capture (loopback) | ✅ PulseAudio monitor | ✅ WASAPI loopback |
 | Whisper STT | ✅ | ✅ |
-| Ollama cloud LLM | ✅ | ✅ |
+| Groq cloud LLM | ✅ | ✅ |
 | Ghost overlay (visible) | ✅ | ✅ |
 | WDA_EXCLUDEFROMCAPTURE | ❌ | ✅ |
 | Invisible to screen share | ❌ | ✅ |
@@ -163,9 +165,13 @@ every load, resumes first — if the character cap bites, the notes get dropped
 rather than half your work history.
 
 **Dynamic:** `context/interview-state.json`, beside the executable in a packaged
-build. Holds the Q&A history, the interviewer's mood, persona and topic, and
-your language / style / device preferences, which survive closing the app. The
-last `KEEP_HISTORY` Q&A pairs go into each prompt for continuity.
+build. Holds the Q&A history and your language / style / device preferences,
+which survive closing the app. The last `KEEP_HISTORY` Q&A pairs go into each
+prompt for continuity. Where you drag and size the overlay is remembered too,
+in `overlay.json` alongside it.
+
+Each launch starts a fresh interview: preferences carry over, the previous
+session's Q&A does not.
 
 ## Architecture
 
@@ -175,15 +181,17 @@ ghastly-ai/
 ├── config.py            ← All settings
 ├── audio_capture.py     ← System audio loopback + VAD
 ├── transcribe.py        ← Whisper STT + question detection
-├── llm_query.py         ← Ollama cloud client (text + vision, streaming)
+├── llm_query.py         ← Groq cloud client (text + vision, streaming)
 ├── file_context.py      ← Resume / document uploads (PDF, DOCX, text)
 ├── context_manager.py   ← Context + state management
 ├── screen_capture.py    ← Screenshot grab + global hotkeys
 ├── ghost_overlay.py     ← WDA_EXCLUDEFROMCAPTURE overlay + setup panel
+├── test_question_filter.py  ← is_question() cases (run it directly)
 ├── context/
 │   ├── interview-context.md   ← Static context (optional, hand-written)
 │   ├── interview-state.json   ← Session state + preferences (auto)
 │   └── uploaded/              ← Extracted text of attached documents (auto)
+├── overlay.json         ← Where you left the window (auto)
 ├── logs/ghastly.log     ← Rotating log (the packaged build has no console)
 ├── requirements.txt
 └── README.md
@@ -191,15 +199,16 @@ ghastly-ai/
 
 ## Latency
 
-Measured on `nemotron-3-super`, end of question to first token on screen:
+Measured on `openai/gpt-oss-120b`, end of question to first token on screen:
 
 ```
 Whisper STT (~0.5s) → context prep (~0.01s) → LLM TTFT (~1.0-1.6s)
 Total: ~1.5-2.1s
 ```
 
-Screen captures are slower — `gemma4:31b` takes roughly 7-15s to first token.
-It is the trade for a vision model with no daily request cap.
+Screen captures are slower — the vision model takes roughly 7-15s to first
+token, and its answer is capped at 500 tokens to stay under the free tier's
+per-minute output limit.
 
 ## Troubleshooting
 
@@ -207,6 +216,10 @@ It is the trade for a vision model with no daily request cap.
 the audio source. The default picks a WASAPI loopback device automatically, but
 if the call's audio is routed elsewhere the pipeline never sees it. The log
 records which device was chosen. Meanwhile, type the question into the ask box.
+
+**The pill turns red and says speech-to-text failed.** That is the real cause,
+not silence — a rejected key, an exhausted quota, or a dropped connection. It
+used to look identical to nobody talking.
 
 **Blank answers.** Reasoning models can spend the entire token budget on
 thinking tokens, which are discarded. The panel says so when it happens; switch
