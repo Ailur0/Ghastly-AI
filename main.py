@@ -15,6 +15,8 @@ import time
 import logging
 import threading
 import signal
+import difflib
+import re
 
 # Add project dir to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -85,6 +87,20 @@ if _picker_crashed:
 # A JPEG starts FF D8; the screen capture falls back to PNG when PIL is
 # missing, and the vision request has to declare which it is sending.
 JPEG_MAGIC = bytes((0xFF, 0xD8))
+
+_PUNCT_RE = re.compile(r"[^\w\s]")
+_SPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_speech(text: str) -> str:
+    """
+    Flatten a transcript for comparison against another of the same audio.
+
+    Whisper is not deterministic about punctuation or hyphenation between two
+    passes — "trade-offs" one time, "tradeoffs" the next — so none of that can
+    be allowed to decide whether two transcripts are the same speech.
+    """
+    return _SPACE_RE.sub(" ", _PUNCT_RE.sub(" ", text.lower())).strip()
 
 
 class GhostInterviewAgent:
@@ -164,6 +180,13 @@ class GhostInterviewAgent:
         # the answer you were reading.
         self._last_stt_error = None
         self._last_stt_error_at = 0.0
+
+        # What the grab hotkey most recently answered, so the live loop can
+        # recognise the same speech arriving through the VAD and not answer
+        # it a second time.
+        self._grab_covers_until = 0.0
+        self._last_grab_text = ""
+        self._last_grab_at = 0.0
 
         # One answer owns the panel at a time, and the newest question wins.
         # Each answer carries a ticket; the moment a newer one is claimed the
@@ -287,6 +310,49 @@ class GhostInterviewAgent:
         elif kind == "audio_device":
             self.context_mgr.set_audio_device(value)
             self.restart_audio(value)
+
+    # How long after a grab press the live loop assumes the grab is covering
+    # the same speech. Long enough for the grab's own transcription to finish
+    # and its answer to be claimed.
+    GRAB_COVER_SEC = 4.0
+    # And how long its transcript stays around to recognise a late duplicate.
+    GRAB_ECHO_SEC = 25.0
+
+    def _duplicates_recent_grab(self, text: str) -> bool:
+        """
+        Has the grab hotkey already answered this speech?
+
+        Timing alone cannot decide it. The grab reaches back over audio the
+        VAD may have emitted a moment earlier, a moment later, or be midway
+        through transcribing — every ordering happens, and a live run showed
+        the VAD usually wins the race. So the comparison is on what was
+        actually said.
+
+        The grab's window is longer than one utterance, so its transcript
+        normally *contains* the VAD's rather than equalling it; and the two
+        transcriptions of the same audio are not always identical, which is
+        why near-matches count too.
+        """
+        if time.time() < self._grab_covers_until:
+            logger.info("Skipping an utterance the grab hotkey is answering")
+            return True
+
+        if not self._last_grab_text:
+            return False
+        if time.time() - self._last_grab_at > self.GRAB_ECHO_SEC:
+            return False
+
+        mine = _normalize_speech(text)
+        theirs = self._last_grab_text
+        if not mine:
+            return False
+        if mine in theirs:
+            logger.info("Skipping an utterance the grab hotkey already answered")
+            return True
+        if difflib.SequenceMatcher(None, mine, theirs).ratio() >= 0.85:
+            logger.info("Skipping a near-duplicate of what the grab answered")
+            return True
+        return False
 
     STT_ERROR_REPEAT_SEC = 60
 
@@ -613,6 +679,10 @@ class GhostInterviewAgent:
         if not self._grab_lock.acquire(blocking=False):
             logger.debug("Grab already in progress, ignoring hotkey press")
             return
+        # Claimed here rather than inside the thread: the VAD may already be
+        # transcribing this same speech, and the listening loop checks this
+        # before spending an LLM call on it.
+        self._grab_covers_until = time.time() + self.GRAB_COVER_SEC
         threading.Thread(target=self._process_grab, daemon=True).start()
 
     def _process_grab(self):
@@ -659,6 +729,8 @@ class GhostInterviewAgent:
 
             logger.info(f"Grab transcribed ({result.get('latency_ms', 0):.0f}ms): "
                         f"'{text[:80]}'")
+            self._last_grab_text = _normalize_speech(text)
+            self._last_grab_at = time.time()
         except Exception as e:
             logger.error(f"Grab failed: {e}")
             self.overlay.set_status("error")
@@ -836,6 +908,10 @@ class GhostInterviewAgent:
                 
                 logger.info(f"Transcribed ({stt_latency:.0f}ms): '{text[:80]}...'")
                 
+                if self._duplicates_recent_grab(text):
+                    self.overlay.set_status("listening")
+                    continue
+
                 # Filter: is this a question or meaningful statement?
                 if not is_question(text):
                     logger.debug(f"Not a question, skipping: '{text[:60]}'")
