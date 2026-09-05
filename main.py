@@ -23,8 +23,7 @@ import config
 from audio_capture import AudioCapture
 from transcribe import transcribe, is_question
 from llm_query import (
-    query_ollama_stream, query_ollama_vision_stream,
-    query_openrouter_vision_stream, tokens_for_style
+    query_ollama_stream, query_ollama_vision_stream, tokens_for_style
 )
 from context_manager import ContextManager, resolve_writable_path
 from ghost_overlay import GhostOverlay
@@ -249,36 +248,64 @@ class GhostInterviewAgent:
         elif kind == "language":
             self.context_mgr.set_code_language(value)
         elif kind == "hotkey":
-            label, new_val = value
-            
-            listener_map = {
-                "Answer what was just said": ("GRAB_HOTKEY", self.grab_listener),
-                "Screen capture": ("SCREEN_CAPTURE_HOTKEY", self.hotkey_listener),
-                "Hide / show": ("PANIC_HOTKEY", self.panic_listener),
-                "Opaque / translucent": ("OPACITY_HOTKEY", self.opacity_listener),
-                "Answer last question": ("RETRY_HOTKEY", self.retry_listener)
-            }
-            
-            if label in listener_map:
-                env_key, listener = listener_map[label]
-                logger.info(f"Updating hotkey {env_key} to {new_val}")
-                config.update_env_file(env_key, new_val)
-                os.environ[env_key] = new_val
-                listener.stop()
-                listener.hotkey = new_val
-                listener.start()
-                
-                # Update the overlay's internal list so it persists in the UI
-                for i, (l, h) in enumerate(self.overlay.hotkeys):
-                    if l == label:
-                        self.overlay.hotkeys[i] = (l, new_val)
-                        break
-
+            return self._rebind_hotkey(*value)
         elif kind == "style":
             self.context_mgr.set_answer_style(value)
         elif kind == "audio_device":
             self.context_mgr.set_audio_device(value)
             self.restart_audio(value)
+
+    def _rebind_hotkey(self, label: str, new_val: str):
+        """
+        Point one global hotkey at a new combo. Returns (ok, message).
+
+        Registration can fail — `keyboard` rejects combos Qt is happy to hand
+        us — and by then the old binding is already gone, so the action would
+        be dead until restart with the panel still claiming success. Put the
+        old combo back and say so instead.
+        """
+        listener_map = {
+            "Answer what was just said": ("GRAB_HOTKEY", self.grab_listener),
+            "Screen capture": ("SCREEN_CAPTURE_HOTKEY", self.hotkey_listener),
+            "Hide / show": ("PANIC_HOTKEY", self.panic_listener),
+            "Opaque / translucent": ("OPACITY_HOTKEY", self.opacity_listener),
+            "Answer last question": ("RETRY_HOTKEY", self.retry_listener),
+        }
+
+        if label not in listener_map:
+            logger.warning(f"Unknown hotkey label: {label}")
+            return False, f"No hotkey called '{label}'."
+
+        env_key, listener = listener_map[label]
+        old_val = listener.hotkey
+
+        if old_val == new_val:
+            return True, f"'{label}' is already {new_val}."
+
+        # Two actions sharing a combo means both fire, and stop() unregisters
+        # by combo string — so it would tear down the wrong one. Refuse.
+        for other_label, other_val in self.overlay.hotkeys:
+            if other_label != label and other_val == new_val:
+                return False, f"{new_val} is already '{other_label}'."
+
+        logger.info(f"Updating hotkey {env_key}: {old_val} -> {new_val}")
+        listener.stop()
+        listener.hotkey = new_val
+        if not listener.start():
+            listener.hotkey = old_val
+            listener.start()
+            logger.warning(f"Hotkey '{new_val}' rejected — kept '{old_val}'")
+            return False, f"Couldn't register {new_val} — kept {old_val}."
+
+        # Only persist a combo that actually took.
+        saved = config.update_env_file(env_key, new_val)
+        os.environ[env_key] = new_val
+        setattr(config, env_key, new_val)
+        self.overlay.set_hotkey(label, new_val)
+
+        if not saved:
+            return True, f"'{label}' is now {new_val}, but won't survive a restart."
+        return True, f"'{label}' is now {new_val}."
 
     def _audio_watchdog(self):
         """

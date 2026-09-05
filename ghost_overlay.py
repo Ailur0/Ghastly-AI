@@ -335,7 +335,19 @@ if HAS_PYQT:
                 self.setText(self.current_hotkey)
                 return
 
-            seq = QKeySequence(key | int(event.modifiers())).toString(QKeySequence.PortableText).lower()
+            mods = event.modifiers()
+            if not (mods & (Qt.ControlModifier | Qt.AltModifier |
+                            Qt.ShiftModifier | Qt.MetaModifier)):
+                # A bare key registers globally, so it would be swallowed in
+                # every other app for as long as this one runs.
+                self.first_press = None
+                self.setText("Needs ctrl / alt / shift...")
+                return
+
+            seq = QKeySequence(key | int(mods)).toString(QKeySequence.PortableText).lower()
+            # Qt spells the Windows key "meta"; the keyboard library that
+            # actually registers the combo only knows it as "windows".
+            seq = seq.replace("meta+", "windows+")
             if not seq:
                 return
 
@@ -344,11 +356,17 @@ if HAS_PYQT:
                 self.setText(f"Press {seq} again to confirm...")
             else:
                 if self.first_press == seq:
-                    self.current_hotkey = seq
-                    self.setText(seq)
-                    self.on_changed(self.key_name, seq)
-                else:
-                    self.setText(self.current_hotkey)
+                    # The owner registers it and says whether it took; only
+                    # show the new combo once it is really bound.
+                    result = self.on_changed(self.key_name, seq)
+                    if isinstance(result, tuple):
+                        accepted = result[0]
+                    else:
+                        accepted = True
+                    if accepted:
+                        self.current_hotkey = seq
+                self.setText(self.current_hotkey)
+                self.first_press = None
                 self.listening = False
 
     class SetupDialog(QDialog):
@@ -742,8 +760,13 @@ if HAS_PYQT:
                                 "Code answers follow the question.")
 
         def _hotkey_changed(self, key_name, new_value):
-            self.on_changed("hotkey", (key_name, new_value))
-            self.status.setText(f"Hotkey for '{key_name}' updated.")
+            result = self.on_changed("hotkey", (key_name, new_value))
+            if isinstance(result, tuple):
+                ok, message = result
+            else:
+                ok, message = True, f"Hotkey for '{key_name}' updated."
+            self.status.setText(message)
+            return ok, message
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1409,6 +1432,19 @@ class GhostOverlay:
             self.opacity_btn.setToolTip("Translucent — click to make opaque")
             self.window.setWindowOpacity(self.OPACITY_TRANSLUCENT)
             logger.info("Overlay opacity: translucent")
+
+    def set_hotkey(self, label: str, combo: str):
+        """
+        Record a rebound hotkey and rebuild the info tooltip, which is
+        otherwise only built once at startup and would go on advertising the
+        combo the app no longer listens for.
+        """
+        for i, (l, _) in enumerate(self.hotkeys):
+            if l == label:
+                self.hotkeys[i] = (l, combo)
+                break
+        if self.info_btn is not None:
+            self.info_btn.setToolTip(self._build_hotkeys_tooltip())
 
     def _build_hotkeys_tooltip(self) -> str:
         """Build the info button's tooltip text listing all configured hotkeys."""

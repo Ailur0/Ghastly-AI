@@ -88,12 +88,15 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 
     cap = ScreenCapture()
-    png_bytes = cap.capture_primary_monitor()
-    print(f"Captured {len(png_bytes)} bytes")
+    image_bytes = cap.capture_primary_monitor()
+    # The compressed path returns JPEG; only the no-PIL fallback is a PNG.
+    ext = "jpg" if image_bytes[:2] == b"\xff\xd8" else "png"
+    out = f"screen_capture_test.{ext}"
+    print(f"Captured {len(image_bytes)} bytes ({ext.upper()})")
 
-    with open("screen_capture_test.png", "wb") as f:
-        f.write(png_bytes)
-    print("Saved to screen_capture_test.png — open it to confirm it's a valid screenshot")
+    with open(out, "wb") as f:
+        f.write(image_bytes)
+    print(f"Saved to {out} — open it to confirm it's a valid screenshot")
 
     def on_hotkey():
         print("Hotkey fired!")

@@ -4,23 +4,50 @@
 
 import sys
 import os
+import logging
 from pathlib import Path
+
+import file_context
+
+logger = logging.getLogger(__name__)
 
 # PyInstaller base & executable paths
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
     _base_dir = Path(sys._MEIPASS)
     _exe_dir = Path(sys.executable).parent
+    # Settings changed from the setup panel have to land somewhere that
+    # outlives the process. sys._MEIPASS is a temp folder Windows deletes on
+    # exit, and the .exe's own folder may be unwritable — so share the
+    # fallback chain the uploads and the saved state already use.
+    _env_write_path = file_context.writable_base() / ".env"
 else:
     _base_dir = Path(__file__).parent
     _exe_dir = _base_dir
+    _env_write_path = _base_dir / ".env"
 
-# Load .env file (checks .exe folder first, then bundled _base_dir)
-_env_path = _exe_dir / ".env"
-if not _env_path.exists():
-    _env_path = _base_dir / ".env"
 
-if _env_path.exists():
-    with open(_env_path, encoding='utf-8') as f:
+def _env_files():
+    """
+    Every .env worth reading, highest precedence first.
+
+    Keys load with setdefault, so the first file to mention one wins: a
+    setting changed in the setup panel beats a .env shipped beside the .exe,
+    which beats the copy baked into the bundle. That layering is what lets
+    the writable file hold nothing but the handful of changed settings
+    while the API keys keep coming from the shipped file.
+    """
+    seen = set()
+    for path in (_env_write_path, _exe_dir / ".env", _base_dir / ".env"):
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.exists():
+            yield path
+
+
+for _env_file in _env_files():
+    with open(_env_file, encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -29,33 +56,43 @@ if _env_path.exists():
                 key, val = line.split("=", 1)
                 os.environ.setdefault(key.strip(), val.strip())
 
-def update_env_file(key: str, value: str):
-    """Update a key in the .env file, preserving comments and structure."""
-    if not _env_path.exists():
-        with open(_env_path, "w", encoding="utf-8") as f:
-            f.write(f"{key}={value}\n")
-        return
 
-    lines = []
-    with open(_env_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
+def update_env_file(key: str, value: str) -> bool:
+    """
+    Persist one setting to the writable .env, preserving comments and
+    structure. Returns True if it actually stuck.
 
-    updated = False
-    for i, line in enumerate(lines):
-        if line.strip() and not line.startswith("#") and "=" in line:
-            k, _ = line.split("=", 1)
-            if k.strip() == key:
-                lines[i] = f"{key}={value}\n"
-                updated = True
-                break
-    
-    if not updated:
-        if lines and not lines[-1].endswith("\n"):
-            lines.append("\n")
-        lines.append(f"{key}={value}\n")
+    Never raises: a settings file the app cannot write is worth a warning and
+    a change that lasts the session, not a crash inside the setup panel.
+    """
+    try:
+        _env_write_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(_env_path, "w", encoding="utf-8") as f:
-        f.writelines(lines)
+        lines = []
+        if _env_write_path.exists():
+            with open(_env_write_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+        updated = False
+        for i, line in enumerate(lines):
+            if line.strip() and not line.startswith("#") and "=" in line:
+                k, _ = line.split("=", 1)
+                if k.strip() == key:
+                    lines[i] = f"{key}={value}\n"
+                    updated = True
+                    break
+
+        if not updated:
+            if lines and not lines[-1].endswith("\n"):
+                lines.append("\n")
+            lines.append(f"{key}={value}\n")
+
+        with open(_env_write_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        return True
+    except Exception as e:
+        logger.warning(f"Could not save {key} to {_env_write_path}: {e}")
+        return False
 
 
 # === STT (Groq Whisper API) ===
@@ -64,19 +101,15 @@ GROQ_WHISPER_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3")
 GROQ_BASE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 # === LLM (Groq Cloud) ===
-# Previously Ollama/nemotron — now using Groq gpt-oss-120b.
-# Old Ollama config commented out below for easy rollback:
-# OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "")
-# OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "nemotron-3-super")
-# OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "gemma4:31b")
-# OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "https://api.ollama.com/api")
+# Was Ollama Cloud / nemotron until v2026-09-04; `git log -- config.py` has
+# the old settings if that ever needs undoing.
 GROQ_LLM_API_KEY = os.environ.get("GROQ_LLM_API_KEY", "")
 GROQ_LLM_MODEL = os.environ.get("GROQ_LLM_MODEL", "openai/gpt-oss-120b")
-# llama-3.2-11b-vision-preview is the free-tier vision model on Groq.
-# llama-4-scout (meta-llama/llama-4-scout-17b-16e-instruct) is faster but
-# requires a paid/verified Groq account — set GROQ_LLM_VISION_MODEL in .env
-# to switch once you have access.
-GROQ_LLM_VISION_MODEL = os.environ.get("GROQ_LLM_VISION_MODEL", "llama-3.2-11b-vision-preview")
+# Screen captures need a model that takes images. The llama-3.2-*-vision-preview
+# models this used to point at have been decommissioned by Groq, and no llama-4
+# vision model is offered on this key — qwen3.8-27b is what's actually available
+# and accepts image_url blocks. Check /v1/models before changing this.
+GROQ_LLM_VISION_MODEL = os.environ.get("GROQ_LLM_VISION_MODEL", "qwen/qwen3.8-27b")
 GROQ_LLM_BASE_URL = os.environ.get("GROQ_LLM_BASE_URL", "https://api.groq.com/openai/v1")
 # Aliases so existing code referencing OLLAMA_* keeps working without changes.
 OLLAMA_API_KEY = GROQ_LLM_API_KEY
