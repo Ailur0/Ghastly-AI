@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from screen_capture import ScreenCapture, HotkeyListener
-from llm_query import query_ollama_vision_stream
+from llm_query import query_vision_stream
 from context_manager import ContextManager
 
 logging.basicConfig(
@@ -40,7 +40,7 @@ def run_capture_and_query(screen_capture: ScreenCapture, cm: ContextManager):
     t0 = time.time()
     full_answer = ""
     meta = None
-    for chunk in query_ollama_vision_stream(
+    for chunk in query_vision_stream(
         image_b64=image_b64,
         prompt=config.SCREEN_CAPTURE_PROMPT,
         context=cm.get_context_string(),

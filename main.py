@@ -25,7 +25,7 @@ import config
 from audio_capture import AudioCapture
 from transcribe import transcribe, is_question, describe_stt_error
 from llm_query import (
-    query_ollama_stream, query_ollama_vision_stream, tokens_for_style
+    query_llm_stream, query_vision_stream, tokens_for_style
 )
 from context_manager import ContextManager, resolve_writable_path
 from ghost_overlay import GhostOverlay
@@ -664,7 +664,7 @@ class GhostInterviewAgent:
             meta = None
             superseded = False
 
-            stream = query_ollama_stream(
+            stream = query_llm_stream(
                 question=question_text,
                 context=context,
                 state=state,
@@ -857,7 +857,7 @@ class GhostInterviewAgent:
                                  config.MAX_ANSWER_CHARS // 4),
                 500
             )
-            stream = query_ollama_vision_stream(
+            stream = query_vision_stream(
                 image_b64=image_b64,
                 prompt=config.SCREEN_CAPTURE_PROMPT,
                 context=context,

@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from audio_capture import AudioCapture
 from transcribe import transcribe, is_question
-from llm_query import query_ollama_stream
+from llm_query import query_llm_stream
 from context_manager import ContextManager
 
 logging.basicConfig(
@@ -96,7 +96,7 @@ def main():
             t1 = time.time()
             full_answer = ""
             meta = None
-            for chunk in query_ollama_stream(
+            for chunk in query_llm_stream(
                 question=text,
                 context=cm.get_context_string(),
                 state=cm.get_state(),

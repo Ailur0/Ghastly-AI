@@ -297,7 +297,7 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
                 logger.debug(f"Closing the response stream failed: {e}")
 
 
-def query_ollama_stream(
+def query_llm_stream(
     question: str,
     context: str,
     state: dict,
@@ -331,7 +331,7 @@ def query_ollama_stream(
     yield from _stream_chat(url, payload, headers)
 
 
-def query_ollama_vision_stream(
+def query_vision_stream(
     image_b64: str,
     prompt: str,
     context: str,
@@ -393,7 +393,7 @@ if __name__ == "__main__":
         "answers_given": [],
     }
     
-    for chunk in query_ollama_stream(
+    for chunk in query_llm_stream(
         question="What's the difference between SQL and NoSQL databases?",
         context=test_context,
         state=test_state,
@@ -414,7 +414,7 @@ if __name__ == "__main__":
 
     from config import SCREEN_CAPTURE_PROMPT
 
-    for chunk in query_ollama_vision_stream(
+    for chunk in query_vision_stream(
         image_b64=image_b64,
         prompt=SCREEN_CAPTURE_PROMPT,
         context=test_context,
