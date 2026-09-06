@@ -7,9 +7,6 @@ minimum latency. Screen captures go to the same endpoint with an image_url
 block attached, so both share _stream_chat.
 
 Target: <0.5s time-to-first-token, <1s for short answers.
-
-The OLLAMA_* names are aliases config keeps for the pre-v2026-09-04 provider;
-nothing here talks to Ollama any more.
 """
 
 import json
@@ -24,7 +21,7 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import (
-    OLLAMA_API_KEY, OLLAMA_MODEL, OLLAMA_VISION_MODEL, OLLAMA_BASE_URL,
+    GROQ_LLM_API_KEY, GROQ_LLM_MODEL, GROQ_LLM_VISION_MODEL, GROQ_LLM_BASE_URL,
     KEEP_HISTORY, LLM_TEMPERATURE,
 )
 
@@ -200,7 +197,7 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
         response = requests.post(url, json=payload, headers=headers, stream=True, timeout=30)
 
         if response.status_code != 200:
-            error_msg = f"Ollama API error {response.status_code}: {response.text[:200]}"
+            error_msg = f"Groq API error {response.status_code}: {response.text[:200]}"
             logger.error(error_msg)
             yield error_msg
             yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
@@ -280,8 +277,8 @@ def _stream_chat(url: str, payload: dict, headers: dict) -> Generator:
         }
 
     except requests.exceptions.Timeout:
-        logger.error("Ollama API timeout")
-        yield "[Error: Ollama API timeout]"
+        logger.error("Groq API timeout")
+        yield "[Error: the model did not respond in time]"
         yield {"_meta": {"total_ms": 0, "ttft_ms": 0, "token_count": 0,
                          "full_text": "", "error": "timeout"}}
     except Exception as e:
@@ -304,9 +301,9 @@ def query_ollama_stream(
     question: str,
     context: str,
     state: dict,
-    api_key: str = OLLAMA_API_KEY,
-    model: str = OLLAMA_MODEL,
-    base_url: str = OLLAMA_BASE_URL,
+    api_key: str = GROQ_LLM_API_KEY,
+    model: str = GROQ_LLM_MODEL,
+    base_url: str = GROQ_LLM_BASE_URL,
     max_tokens: int = 250
 ) -> Generator:
     """Stream response from Groq /chat/completions endpoint (OpenAI-compatible, text-only)."""
@@ -339,9 +336,9 @@ def query_ollama_vision_stream(
     prompt: str,
     context: str,
     state: dict,
-    api_key: str = OLLAMA_API_KEY,
-    model: str = OLLAMA_VISION_MODEL,
-    base_url: str = OLLAMA_BASE_URL,
+    api_key: str = GROQ_LLM_API_KEY,
+    model: str = GROQ_LLM_VISION_MODEL,
+    base_url: str = GROQ_LLM_BASE_URL,
     max_tokens: int = 250,
     mime: str = "image/png",
 ) -> Generator:
@@ -388,7 +385,7 @@ def query_ollama_vision_stream(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
-    print("=== Ollama GLM-5.2 Streaming Test ===\n")
+    print("=== Groq streaming test ===\n")
     
     test_context = "Candidate is an ML Engineer with 1.5 years experience in production ML, FastAPI, TensorFlow, RAG pipelines."
     test_state = {
@@ -407,7 +404,7 @@ if __name__ == "__main__":
         else:
             print(chunk, end="", flush=True)
 
-    print("\n\n=== Ollama Vision Test ===\n")
+    print("\n\n=== Groq vision test ===\n")
 
     import base64
     from screen_capture import ScreenCapture

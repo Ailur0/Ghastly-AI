@@ -3,7 +3,7 @@ main.py — Ghastly AI: Entry point & orchestration
 
 Pipeline:
   System Audio → VAD → Groq Whisper STT (cloud) → Question Filter →
-  Context+State → Ollama LLM (cloud, streaming) → Ghost Overlay
+  Context+State → Groq LLM (cloud, streaming) → Ghost Overlay
 
 Latency target: <2s from end of interviewer's question to answer displayed.
 Zero local model downloads — STT and LLM both cloud-based.
@@ -628,13 +628,17 @@ class GhostInterviewAgent:
                 "screen capture disabled, audio pipeline unaffected"
             )
 
-        # Verify Groq API key is set
-        if not config.GROQ_API_KEY or config.GROQ_API_KEY == "your-groq-api-key":
-            logger.warning("Groq API key not set! Edit config.py")
-        
-        # Verify Ollama API key is set
-        if not config.OLLAMA_API_KEY or config.OLLAMA_API_KEY == "your-ollama-api-key":
-            logger.warning("Ollama API key not set! Edit config.py")
+        # Two separate keys, and each fails differently: without the first
+        # nothing is ever transcribed, without the second nothing is ever
+        # answered. Both name the variable and the file to put it in, because
+        # the old wording sent people to config.py to edit a key that is read
+        # from .env.
+        if not config.GROQ_API_KEY or config.GROQ_API_KEY.startswith("your-"):
+            logger.warning("GROQ_API_KEY is not set in .env — speech-to-text "
+                           "will fail on every utterance")
+        if not config.GROQ_LLM_API_KEY or config.GROQ_LLM_API_KEY.startswith("your-"):
+            logger.warning("GROQ_LLM_API_KEY is not set in .env — questions "
+                           "will be transcribed but never answered")
 
     def process_question(self, question_text: str):
         """
@@ -664,9 +668,9 @@ class GhostInterviewAgent:
                 question=question_text,
                 context=context,
                 state=state,
-                api_key=config.OLLAMA_API_KEY,
-                model=config.OLLAMA_MODEL,
-                base_url=config.OLLAMA_BASE_URL,
+                api_key=config.GROQ_LLM_API_KEY,
+                model=config.GROQ_LLM_MODEL,
+                base_url=config.GROQ_LLM_BASE_URL,
                 max_tokens=tokens_for_style(
                     self.context_mgr.get_answer_style(),
                     config.MAX_ANSWER_CHARS // 4)
@@ -858,9 +862,9 @@ class GhostInterviewAgent:
                 prompt=config.SCREEN_CAPTURE_PROMPT,
                 context=context,
                 state=state,
-                api_key=config.OLLAMA_API_KEY,
-                model=config.OLLAMA_VISION_MODEL,
-                base_url=config.OLLAMA_BASE_URL,
+                api_key=config.GROQ_LLM_API_KEY,
+                model=config.GROQ_LLM_VISION_MODEL,
+                base_url=config.GROQ_LLM_BASE_URL,
                 max_tokens=_vision_tokens,
                 mime=mime,
             )

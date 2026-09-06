@@ -34,7 +34,7 @@ def run_capture_and_query(screen_capture: ScreenCapture, cm: ContextManager):
 
     image_b64 = base64.b64encode(png_bytes).decode("utf-8")
 
-    print(f"Querying {config.OLLAMA_VISION_MODEL}...")
+    print(f"Querying {config.GROQ_LLM_VISION_MODEL}...")
     print(f"{'='*60}\n")
 
     t0 = time.time()
@@ -45,9 +45,9 @@ def run_capture_and_query(screen_capture: ScreenCapture, cm: ContextManager):
         prompt=config.SCREEN_CAPTURE_PROMPT,
         context=cm.get_context_string(),
         state=cm.get_state(),
-        api_key=config.OLLAMA_API_KEY,
-        model=config.OLLAMA_VISION_MODEL,
-        base_url=config.OLLAMA_BASE_URL,
+        api_key=config.GROQ_LLM_API_KEY,
+        model=config.GROQ_LLM_VISION_MODEL,
+        base_url=config.GROQ_LLM_BASE_URL,
     ):
         if isinstance(chunk, dict) and "_meta" in chunk:
             meta = chunk["_meta"]

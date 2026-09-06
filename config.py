@@ -126,11 +126,6 @@ GROQ_LLM_MODEL = os.environ.get("GROQ_LLM_MODEL", "openai/gpt-oss-120b")
 # and accepts image_url blocks. Check /v1/models before changing this.
 GROQ_LLM_VISION_MODEL = os.environ.get("GROQ_LLM_VISION_MODEL", "qwen/qwen3.8-27b")
 GROQ_LLM_BASE_URL = os.environ.get("GROQ_LLM_BASE_URL", "https://api.groq.com/openai/v1")
-# Aliases so existing code referencing OLLAMA_* keeps working without changes.
-OLLAMA_API_KEY = GROQ_LLM_API_KEY
-OLLAMA_MODEL = GROQ_LLM_MODEL
-OLLAMA_VISION_MODEL = GROQ_LLM_VISION_MODEL
-OLLAMA_BASE_URL = GROQ_LLM_BASE_URL
 
 # === Screen Capture ===
 SCREEN_CAPTURE_HOTKEY = os.environ.get("SCREEN_CAPTURE_HOTKEY", "ctrl+shift+h")

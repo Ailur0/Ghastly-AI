@@ -1,7 +1,7 @@
 """
 test_pipeline.py — End-to-end pipeline test (no overlay, just terminal output)
 
-Audio capture → Groq Whisper STT → Question filter → Ollama LLM → Print to terminal
+Audio capture → Groq Whisper STT → Question filter → Groq LLM → Print to terminal
 """
 
 import sys
@@ -92,7 +92,7 @@ def main():
             print(f"{'='*60}")
             print("📝 ANSWER: ", end="", flush=True)
             
-            # Query Ollama LLM
+            # Query the LLM
             t1 = time.time()
             full_answer = ""
             meta = None
@@ -100,9 +100,9 @@ def main():
                 question=text,
                 context=cm.get_context_string(),
                 state=cm.get_state(),
-                api_key=config.OLLAMA_API_KEY,
-                model=config.OLLAMA_MODEL,
-                base_url=config.OLLAMA_BASE_URL,
+                api_key=config.GROQ_LLM_API_KEY,
+                model=config.GROQ_LLM_MODEL,
+                base_url=config.GROQ_LLM_BASE_URL,
             ):
                 if isinstance(chunk, dict) and "_meta" in chunk:
                     meta = chunk["_meta"]
