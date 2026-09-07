@@ -216,9 +216,11 @@ def log_environment():
                 f"utterance={config.MIN_UTTERANCE_SEC}-{config.MAX_UTTERANCE_SEC}s "
                 f"ring={config.AUDIO_RING_SEC}s grab={config.GRAB_SECONDS}s")
 
-    from audio_capture import SOUNDCARD_AVAILABLE, SD_AVAILABLE
-    logger.info(f"  audio libs   : soundcard={SOUNDCARD_AVAILABLE} "
-                f"sounddevice={SD_AVAILABLE} | backend={config.AUDIO_BACKEND}")
+    import audio_capture as _ac
+    logger.info(f"  audio libs   : soundcard={_ac.SOUNDCARD_AVAILABLE} "
+                f"sounddevice={_ac.SD_AVAILABLE} | backend={config.AUDIO_BACKEND} "
+                f"| deviceperiod_cached={_ac.DEVICEPERIOD_CACHED}"
+                + (f" (failed: {_ac.DEVICEPERIOD_ERROR})" if _ac.DEVICEPERIOD_ERROR else ""))
     logger.info("--- end environment ---")
 
 
@@ -1045,6 +1047,12 @@ class GhostInterviewAgent:
         heartbeat = threading.Thread(target=self._heartbeat,
                                      name="heartbeat", daemon=True)
         heartbeat.start()
+
+        if getattr(self.audio, "capturing_microphone", False):
+            self.overlay.set_status("error")
+            self.overlay.notice(
+                "No loopback device — this is listening to your microphone, "
+                "not the interviewer. Pick a loopback source in setup.")
         
         # Run GUI event loop on main thread (blocks until overlay closed or Ctrl+C)
         self.overlay.exec()

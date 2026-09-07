@@ -37,6 +37,59 @@ try:
 except Exception:
     SOUNDCARD_AVAILABLE = False
 
+
+DEVICEPERIOD_CACHED = False
+DEVICEPERIOD_ERROR = None
+
+
+def _cache_soundcard_deviceperiod():
+    """
+    Stop soundcard re-reading the device period on every pass of its silence
+    loop.
+
+    Every crash dump from the machine that fails has the capture thread inside
+    _record_chunk's `while self._capture_available_frames() == 0` branch — the
+    path soundcard takes for cards that report *no frames at all* during
+    silence rather than handing back zeros. Realtek's Smart Sound Technology
+    driver is such a card, which is why machines with an ordinary Realtek
+    device never enter that loop and never crash.
+
+    The loop calls self.deviceperiod every pass, and deviceperiod is a vtable
+    call into IAudioClient (GetDevicePeriod). Two of the four dumps fault
+    inside exactly that call. The period cannot change while a stream is open,
+    so it is read once per client and reused.
+
+    Being straight about the odds: this removes the call that is *seen*
+    faulting, but _capture_available_frames is another COM call in the same
+    loop, and the fault may simply move there. It costs one cached attribute
+    to find out, and the alternative for that machine is an app that dies
+    within a minute.
+    """
+    if not SOUNDCARD_AVAILABLE:
+        return
+    try:
+        from soundcard import mediafoundation as _mf
+        original = _mf._AudioClient.deviceperiod
+
+        def cached(self):
+            value = getattr(self, "_cached_deviceperiod", None)
+            if value is None:
+                value = original.fget(self)
+                self._cached_deviceperiod = value
+            return value
+
+        _mf._AudioClient.deviceperiod = property(cached)
+        # Reported via log_environment: this runs at import, before logging
+        # is configured, so anything said here would go nowhere.
+        global DEVICEPERIOD_CACHED
+        DEVICEPERIOD_CACHED = True
+    except Exception as e:
+        global DEVICEPERIOD_ERROR
+        DEVICEPERIOD_ERROR = str(e)
+
+
+_cache_soundcard_deviceperiod()
+
 # Try to import sounddevice
 try:
     import sounddevice as sd
@@ -98,6 +151,11 @@ class AudioCapture:
 
         # Why the capture thread stopped, if it did. See capture_alive().
         self._capture_error = None
+
+        # True when capture fell back to a microphone because no loopback
+        # device was available. The answers are worthless in that state, so it
+        # has to reach the user rather than only the log.
+        self.capturing_microphone = False
 
         # Set by the capture thread when Windows switches the default speaker,
         # read and cleared by the watchdog. A bool passed between threads,
@@ -188,7 +246,18 @@ class AudioCapture:
                 return idx
         
         idx, name, dtype = candidates[0]
-        logger.info(f"Using audio input device: [{idx}] {name} ({dtype})")
+        # Nothing here loops the speakers back, so this is a microphone. That
+        # is a different app: it hears the candidate instead of the
+        # interviewer, and every "question" it answers is something the user
+        # just said. Silently doing that is worse than not running, so say so
+        # loudly — PortAudio has no WASAPI loopback in this version, which is
+        # why AUDIO_BACKEND=sounddevice cannot substitute for it.
+        self.capturing_microphone = True
+        logger.critical(
+            f"No loopback device available — falling back to [{idx}] {name}, "
+            f"which is a MICROPHONE. The app will hear you, not the "
+            f"interviewer. Enable 'Stereo Mix' in Windows sound settings, or "
+            f"pick a loopback device in the setup panel.")
         return idx
     
     def _find_arecord_monitor(self):
