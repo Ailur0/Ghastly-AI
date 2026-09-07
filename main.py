@@ -143,8 +143,15 @@ def _log_exit():
     that simply ends; this distinguishes them.
     """
     logger.info("Process exiting normally")
-    # Clears the crash counter. Only a clean exit reaches this.
+    # Only a clean exit reaches this, so this stage is known to survive. It
+    # becomes the one used from now on rather than climbing back down into a
+    # configuration that crashes.
     _file_context.clear_session_flag()
+    _file_context.write_diagnostic(
+        {"crashes": 0, "stage": DIAGNOSTIC_STAGE, "good_stage": DIAGNOSTIC_STAGE})
+    if DIAGNOSTIC_STAGE > 0:
+        logger.info(f"Stage {DIAGNOSTIC_STAGE} survived — "
+                    f"{DIAGNOSTIC_STAGES[DIAGNOSTIC_STAGE][1]} is what it needed")
     if _crash_log is not None:
         try:
             _crash_log.write(f"===== clean exit {time.strftime('%H:%M:%S')} =====\n")
@@ -157,36 +164,67 @@ def _log_exit():
 # before anything can write the marker again.
 import file_context as _file_context
 
-# How many runs in a row ended without cleaning up after themselves. A native
-# crash gets no chance to write anything on the way out, so this counter is
-# the only evidence the last run died rather than quit.
-_UNCLEAN_EXITS = _file_context.mark_session_open()
-
-# Hiding windows from screen capture means calling into the window manager
-# every time this app shows anything. On one machine that is fatal — the
-# process dies within seconds of the setup panel opening, with the UI thread
-# somewhere inside Qt's own window code and an access violation to show for
-# it. Two rounds of fixes moved the crash without ending it.
-#
-# So after two consecutive crashes the app stops hiding itself, which is both
-# the experiment and the workaround: if it then survives, that was the cause,
-# and meanwhile the person has a working app instead of a fifth crash log.
-# Turning it off is loud, in the log and in the panel, because it is the
-# whole point of this overlay and nobody should lose it without being told.
-CRASHES_BEFORE_UNHIDING = 2
-_AUTO_UNHIDE = _UNCLEAN_EXITS >= CRASHES_BEFORE_UNHIDING
-if _AUTO_UNHIDE and config.CAPTURE_HIDING:
-    config.CAPTURE_HIDING = False
-    logger.critical(
-        f"The last {_UNCLEAN_EXITS} runs ended in a crash. Starting WITHOUT "
-        f"capture hiding — this overlay IS NOW VISIBLE in a screen share. "
-        f"If this run is stable, hiding windows from capture is what was "
-        f"killing it. Set CAPTURE_HIDING=1 in .env to force it back on.")
 _picker_crashed = bool(_file_context.picker_crashed_last_time())
 if _picker_crashed:
     logger.warning("The file picker crashed the app last time — using the "
                    "native Windows picker from now on (it is NOT hidden from "
                    "screen capture)")
+
+
+# ── Self-bisecting diagnostics ───────────────────────────────────────────
+# Four native components can take this process down without leaving a Python
+# exception: the capture library, the window-hiding calls, the global keyboard
+# hooks, and Qt itself. A crash dump names the thread but not the culprit, and
+# every round of "disable one thing and send me the log" costs a day.
+#
+# So the app bisects itself. Each consecutive crash disables one more suspect;
+# a run that exits cleanly records the stage it survived on and stays there.
+# Whatever is disabled when the crashing stops is the answer, and the log says
+# it in one line on the way up.
+#
+# Stages are ordered so the app stays useful for as long as possible: it loses
+# its invisibility before it loses its ears.
+DIAGNOSTIC_STAGES = [
+    (0, "everything on",           "the app as intended"),
+    (1, "capture hiding off",      "windows are no longer hidden from screen "
+                                   "capture — the overlay IS VISIBLE in a share"),
+    (2, "audio capture off",       "nothing is listened to; typed questions "
+                                   "still work"),
+    (3, "global hotkeys off",      "no hotkeys; the panel and ask box still work"),
+]
+MAX_STAGE = DIAGNOSTIC_STAGES[-1][0]
+
+_diag = _file_context.read_diagnostic()
+_UNCLEAN_EXITS = _file_context.mark_session_open()
+
+# A crash since the last clean exit means climb; otherwise sit on whatever
+# stage last survived, so a machine that needs stage 1 does not drop back to
+# stage 0 and crash again every time it is opened.
+if _UNCLEAN_EXITS > _diag.get("crashes", 0):
+    _diag["crashes"] = _UNCLEAN_EXITS
+    _diag["stage"] = min(_diag.get("stage", 0) + 1, MAX_STAGE)
+elif _diag.get("good_stage") is not None:
+    _diag["stage"] = _diag["good_stage"]
+
+DIAGNOSTIC_STAGE = int(os.environ.get("DIAGNOSTIC_STAGE", _diag.get("stage", 0)))
+DIAGNOSTIC_STAGE = max(0, min(DIAGNOSTIC_STAGE, MAX_STAGE))
+_diag["stage"] = DIAGNOSTIC_STAGE
+_file_context.write_diagnostic(_diag)
+
+# What each stage switches off. Cumulative: stage 3 has everything below it
+# disabled too.
+CAPTURE_HIDING_ON = DIAGNOSTIC_STAGE < 1
+AUDIO_CAPTURE_ON = DIAGNOSTIC_STAGE < 2
+HOTKEYS_ON = DIAGNOSTIC_STAGE < 3
+if not CAPTURE_HIDING_ON:
+    config.CAPTURE_HIDING = False
+
+if DIAGNOSTIC_STAGE > 0:
+    _label, _what = DIAGNOSTIC_STAGES[DIAGNOSTIC_STAGE][1:]
+    logger.critical(
+        f"DIAGNOSTIC STAGE {DIAGNOSTIC_STAGE} after {_UNCLEAN_EXITS} crash(es): "
+        f"{_label}. {_what}. If this run is stable, that is the component at "
+        f"fault. Set DIAGNOSTIC_STAGE=0 in .env to start over.")
 
 
 def log_environment():
@@ -240,8 +278,11 @@ def log_environment():
     logger.info(f"  answers      : temp={config.LLM_TEMPERATURE} "
                 f"context_cap={config.MAX_CONTEXT_CHARS} history={config.KEEP_HISTORY}")
     logger.info(f"  capture hide : {'on' if config.CAPTURE_HIDING else 'OFF — the overlay is VISIBLE in a screen share'}"
-                + (f" (auto-disabled after {_UNCLEAN_EXITS} crashes)" if _AUTO_UNHIDE else "")
                 + f" | sweep={'on' if config.CAPTURE_SWEEP else 'off'}"
+                + f" | diagnostic stage {DIAGNOSTIC_STAGE}"
+                + f" ({DIAGNOSTIC_STAGES[DIAGNOSTIC_STAGE][1]})"
+                + f": audio={'on' if AUDIO_CAPTURE_ON else 'OFF'},"
+                + f" hotkeys={'on' if HOTKEYS_ON else 'OFF'}"
                 + f" | unclean exits before this run: {_UNCLEAN_EXITS}")
     logger.info(f"  vad          : threshold={config.SILENCE_THRESHOLD} "
                 f"silence={config.SILENCE_DURATION}s "
@@ -764,28 +805,37 @@ class GhostInterviewAgent:
         logger.info("Available audio devices:")
         self.audio.list_devices()
 
-        # Register screen capture hotkey
-        for label, listener, combo in (
-            ("Panic", self.panic_listener, config.PANIC_HOTKEY),
-            ("Opacity", self.opacity_listener, config.OPACITY_HOTKEY),
-            ("Retry", self.retry_listener, config.RETRY_HOTKEY),
-            ("Grab", self.grab_listener, config.GRAB_HOTKEY),
-        ):
-            logger.info(f"Registering {label.lower()} hotkey...")
-            if listener.start():
-                logger.info(f"{label} hotkey registered: {combo}")
-            else:
-                logger.warning(f"{label} hotkey registration failed — "
-                               f"'{combo}' may be taken by another app")
-
-        logger.info("Registering screen capture hotkey...")
-        if self.hotkey_listener.start():
-            logger.info(f"Screen capture hotkey registered: {config.SCREEN_CAPTURE_HOTKEY}")
+        # The keyboard library installs low-level Windows hooks, which is
+        # native code this process cannot survive a fault in — so it is one of
+        # the things the stage ladder can take away.
+        if not HOTKEYS_ON:
+            logger.critical("DIAGNOSTIC: global hotkeys are off for this run — "
+                            "the keyboard library's low-level hooks are not "
+                            "installed.")
+            self.overlay.notice("Hotkeys are off for this run — the app is "
+                                "working out what keeps crashing it.")
         else:
-            logger.warning(
-                "Screen capture hotkey registration failed — "
-                "screen capture disabled, audio pipeline unaffected"
-            )
+            for label, listener, combo in (
+                ("Panic", self.panic_listener, config.PANIC_HOTKEY),
+                ("Opacity", self.opacity_listener, config.OPACITY_HOTKEY),
+                ("Retry", self.retry_listener, config.RETRY_HOTKEY),
+                ("Grab", self.grab_listener, config.GRAB_HOTKEY),
+            ):
+                logger.info(f"Registering {label.lower()} hotkey...")
+                if listener.start():
+                    logger.info(f"{label} hotkey registered: {combo}")
+                else:
+                    logger.warning(f"{label} hotkey registration failed — "
+                                   f"'{combo}' may be taken by another app")
+
+            logger.info("Registering screen capture hotkey...")
+            if self.hotkey_listener.start():
+                logger.info(f"Screen capture hotkey registered: {config.SCREEN_CAPTURE_HOTKEY}")
+            else:
+                logger.warning(
+                    "Screen capture hotkey registration failed — "
+                    "screen capture disabled, audio pipeline unaffected"
+                )
 
         # Two separate keys, and each fails differently: without the first
         # nothing is ever transcribed, without the second nothing is ever
@@ -1080,12 +1130,16 @@ class GhostInterviewAgent:
                                      name="heartbeat", daemon=True)
         heartbeat.start()
 
-        if _AUTO_UNHIDE:
+        if DIAGNOSTIC_STAGE > 0:
+            # Whatever the ladder has taken away, the person running it has to
+            # know — especially the invisibility, which is the whole point of
+            # the thing and the first item to go.
             self.overlay.set_status("error")
             self.overlay.notice(
-                "This overlay is VISIBLE in screen shares right now. It "
-                "crashed twice with capture hiding on, so it started without "
-                "it. Do not rely on it being hidden until that is sorted.")
+                f"Diagnostic stage {DIAGNOSTIC_STAGE} after a crash: "
+                f"{DIAGNOSTIC_STAGES[DIAGNOSTIC_STAGE][2]}."
+                + (" The overlay is NOT hidden from screen capture right now."
+                   if not CAPTURE_HIDING_ON else ""))
 
         if getattr(self.audio, "capturing_microphone", False):
             self.overlay.set_status("error")
@@ -1098,6 +1152,15 @@ class GhostInterviewAgent:
 
     def _listen_loop(self):
         """Background audio capture → transcribe → query LLM."""
+        if not AUDIO_CAPTURE_ON:
+            logger.critical("DIAGNOSTIC: audio capture is off for this run. "
+                            "Type questions into the ask box instead.")
+            self.overlay.set_status("ready")
+            self.overlay.notice(
+                "Listening is off for this run — the app is working out what "
+                "keeps crashing it. Type a question instead.")
+            return
+
         logger.info("Starting audio capture...")
         self.audio.start()
         self.overlay.set_status("listening")

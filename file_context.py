@@ -153,6 +153,41 @@ def clear_session_flag() -> None:
         logger.debug(f"Could not clear the session marker: {e}")
 
 
+# ── Self-bisecting diagnostic state ──────────────────────────────────────
+# A native crash on someone else's machine gives one bit of information per
+# round trip, and each round trip costs a day. This file lets the app do the
+# bisection itself: each crash disables one more native component, and a run
+# that survives records the stage that worked. What is left disabled when it
+# stops crashing is the culprit.
+import json as _json
+
+
+def diagnostic_path() -> Path:
+    return writable_base() / "context" / ".diagnostic.json"
+
+
+def read_diagnostic() -> dict:
+    """{"crashes": n, "stage": s, "good_stage": g} — never raises."""
+    default = {"crashes": 0, "stage": 0, "good_stage": None}
+    try:
+        p = diagnostic_path()
+        if p.exists():
+            data = _json.loads(p.read_text(encoding="utf-8"))
+            return {**default, **{k: data[k] for k in default if k in data}}
+    except Exception as e:
+        logger.debug(f"Could not read the diagnostic state: {e}")
+    return default
+
+
+def write_diagnostic(state: dict) -> None:
+    try:
+        p = diagnostic_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_json.dumps(state), encoding="utf-8")
+    except Exception as e:
+        logger.debug(f"Could not write the diagnostic state: {e}")
+
+
 def clear_picker_flag() -> None:
     try:
         picker_flag_path().unlink()
