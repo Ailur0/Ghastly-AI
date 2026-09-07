@@ -5,7 +5,12 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('.env', '.'), ('context', 'context')],
+    # context/ is deliberately NOT bundled. It holds interview-state.json —
+    # the questions and answers from whoever last ran this from source — and
+    # bundling it shipped one person's transcript to everyone who got the
+    # exe. The app creates the folder it needs beside the executable on first
+    # run, so nothing is lost by leaving it out.
+    datas=[('.env', '.')],
     hiddenimports=['pypdf', 'PIL', 'PIL.Image', 'PIL.JpegImagePlugin', 'soundcard'],
     hookspath=[],
     hooksconfig={},

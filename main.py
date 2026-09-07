@@ -17,6 +17,7 @@ import threading
 import signal
 import difflib
 import re
+import atexit
 
 # Add project dir to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -28,6 +29,7 @@ from llm_query import (
     query_llm_stream, query_vision_stream, tokens_for_style
 )
 from context_manager import ContextManager, resolve_writable_path
+import ghost_overlay
 from ghost_overlay import GhostOverlay
 import base64
 from screen_capture import ScreenCapture, HotkeyListener
@@ -72,6 +74,81 @@ def _log_unhandled(exc_type, exc, tb):
 
 
 sys.excepthook = _log_unhandled
+
+
+# ── Crash and hang diagnostics ───────────────────────────────────────────
+# "It froze and closed and there was nothing in the log" has three causes,
+# and the log was blind to all of them:
+#
+#   a native crash        an access violation inside soundcard, Qt or mss
+#                         kills the process outright. Python's excepthook
+#                         never runs; there is nothing to catch.
+#   a worker thread dying sys.excepthook covers the main thread only, and
+#                         this app listens, watches, grabs and answers on
+#                         daemon threads. Their tracebacks went to stderr,
+#                         which a windowed build does not have.
+#   a hang                no exception at all. The log just stops, and stops
+#                         somewhere uninformative.
+#
+# The first two are caught below. The third is what the heartbeat is for.
+_crash_log = None
+CRASH_LOG_PATH = None
+try:
+    import faulthandler
+    CRASH_LOG_PATH = _log_path.with_name("crash.log")
+    # Line-buffered and held open for the life of the process: a native crash
+    # gets no chance to flush anything, so nothing may be left pending.
+    _crash_log = open(CRASH_LOG_PATH, "a", buffering=1, encoding="utf-8")
+    _crash_log.write(f"\n===== session {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+    faulthandler.enable(file=_crash_log, all_threads=True)
+except Exception as _fh_err:
+    print(f"Crash traces unavailable: {_fh_err}")
+
+
+def _log_thread_exception(args):
+    """An exception in a worker thread, which sys.excepthook never sees."""
+    logger.critical(
+        f"Unhandled exception in thread '{getattr(args.thread, 'name', '?')}'",
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+
+threading.excepthook = _log_thread_exception
+
+
+def dump_all_stacks(reason: str):
+    """
+    Where every thread is standing right now.
+
+    For a freeze there is no traceback to print, so this is the only way to
+    learn which thread stopped and on what. Written while the app is still
+    running, because afterwards there is nothing left to ask.
+    """
+    logger.critical(f"Dumping thread stacks: {reason}")
+    if _crash_log is None:
+        return
+    try:
+        _crash_log.write(f"\n--- {time.strftime('%H:%M:%S')} stacks: {reason} ---\n")
+        faulthandler.dump_traceback(file=_crash_log, all_threads=True)
+        logger.critical(f"Thread stacks written to {CRASH_LOG_PATH}")
+    except Exception as e:
+        logger.error(f"Could not dump thread stacks: {e}")
+
+
+@atexit.register
+def _log_exit():
+    """
+    Last line in the log, whatever happened.
+
+    An ordinary quit and a process that was killed look identical in a log
+    that simply ends; this distinguishes them.
+    """
+    logger.info("Process exiting normally")
+    if _crash_log is not None:
+        try:
+            _crash_log.write(f"===== clean exit {time.strftime('%H:%M:%S')} =====\n")
+            _crash_log.close()
+        except Exception:
+            pass
 
 
 # Did a previous run die with the file picker open? Read once, at import,
@@ -310,7 +387,7 @@ class GhostInterviewAgent:
     def on_question_typed(self, text: str):
         """A question typed into the overlay — same path as a heard one."""
         logger.info(f"Typed question: {text[:80]}")
-        threading.Thread(target=self.process_question, args=(text,),
+        threading.Thread(target=self.process_question, args=(text,), name="answer",
                          daemon=True).start()
 
     def on_retry(self):
@@ -330,7 +407,7 @@ class GhostInterviewAgent:
         if request[0] == "vision":
             _, image_b64, mime = request
             logger.info("Retrying the last screen capture")
-            threading.Thread(target=self._answer_screen_capture,
+            threading.Thread(target=self._answer_screen_capture, name="answer-vision",
                              args=(image_b64, mime), daemon=True).start()
             return
 
@@ -490,6 +567,53 @@ class GhostInterviewAgent:
         if not saved:
             return True, f"'{label}' is now {new_val}, but won't survive a restart."
         return True, f"'{label}' is now {new_val}."
+
+    UI_STALL_SEC = 6.0
+
+    def _heartbeat(self):
+        """
+        Proof of life, and the last useful line in the log when it freezes.
+
+        A hang leaves no exception and no traceback — the log simply stops,
+        and until now it stopped somewhere that said nothing. Every interval
+        this records what was alive: the threads still running, whether the Qt
+        event loop is still servicing timers, whether audio is still arriving,
+        and what the app was in the middle of. Reading backwards from the end
+        of a truncated log, that is the difference between "the UI wedged" and
+        "the capture thread died" and "the process was killed from outside".
+
+        A stalled event loop also dumps every thread's stack while the app is
+        still running to write it.
+        """
+        stalled_reported = False
+        while self.is_running:
+            time.sleep(config.HEARTBEAT_SEC)
+            if not self.is_running:
+                return
+            try:
+                ui_age = ghost_overlay.seconds_since_ui_tick()
+                alive, capture_reason = self.audio.capture_alive()
+                threads = sorted(t.name for t in threading.enumerate() if t.is_alive())
+
+                logger.info(
+                    f"Heartbeat: ui_last_ran={('%.1fs ago' % ui_age) if ui_age is not None else 'never'} "
+                    f"| capture={'alive' if alive else 'DEAD (%s)' % capture_reason} "
+                    f"| answering={self._answer_active} "
+                    f"| queued_audio={self.audio.audio_queue.qsize()} "
+                    f"| threads={len(threads)} {threads}")
+
+                # The interface has stopped responding but the process has
+                # not died, which is the state a person describes as "it
+                # froze". Catch it while there is still something to ask.
+                if ui_age is not None and ui_age > self.UI_STALL_SEC:
+                    if not stalled_reported:
+                        dump_all_stacks(f"UI thread has not run for {ui_age:.1f}s")
+                        stalled_reported = True
+                elif stalled_reported:
+                    logger.warning("UI thread is responding again")
+                    stalled_reported = False
+            except Exception as e:
+                logger.error(f"Heartbeat failed: {e}", exc_info=True)
 
     MAX_CAPTURE_RESTARTS = 3
 
@@ -744,7 +868,7 @@ class GhostInterviewAgent:
         # transcribing this same speech, and the listening loop checks this
         # before spending an LLM call on it.
         self._grab_covers_until = time.time() + self.GRAB_COVER_SEC
-        threading.Thread(target=self._process_grab, daemon=True).start()
+        threading.Thread(target=self._process_grab, name="grab", daemon=True).start()
 
     def _process_grab(self):
         """
@@ -910,11 +1034,16 @@ class GhostInterviewAgent:
         self.is_running = True
         
         # Start audio listening in background thread
-        listen_thread = threading.Thread(target=self._listen_loop, daemon=True)
+        listen_thread = threading.Thread(target=self._listen_loop, name="listen", daemon=True)
         listen_thread.start()
 
-        watchdog = threading.Thread(target=self._audio_watchdog, daemon=True)
+        watchdog = threading.Thread(target=self._audio_watchdog,
+                                    name="audio-watchdog", daemon=True)
         watchdog.start()
+
+        heartbeat = threading.Thread(target=self._heartbeat,
+                                     name="heartbeat", daemon=True)
+        heartbeat.start()
         
         # Run GUI event loop on main thread (blocks until overlay closed or Ctrl+C)
         self.overlay.exec()

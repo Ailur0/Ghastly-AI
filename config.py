@@ -175,6 +175,10 @@ LOG_BACKUPS = 2
 # that person a new build — the frame-level VAD lines are far too noisy to
 # leave on, and far too useful to leave out.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+# How often the app records that it is still alive and what it was doing.
+# A freeze produces no exception, so the last heartbeat before the log stops
+# is the only evidence of where it stopped.
+HEARTBEAT_SEC = float(os.environ.get("HEARTBEAT_SEC", "30"))
 
 # === Audio Capture ===
 # "Auto" lets the capture layer pick; otherwise a device id from

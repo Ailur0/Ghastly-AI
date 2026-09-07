@@ -20,6 +20,7 @@ On Windows:
 import sys
 import os
 import json
+import time
 import logging
 import ctypes
 import random
@@ -88,6 +89,22 @@ try:
 except ImportError:
     HAS_PYQT = False
     logger.warning("PyQt5 not installed")
+
+
+# When the Qt event loop last ran a timer. Read from other threads to tell a
+# busy app from a frozen one; a plain float assignment needs no lock.
+UI_ALIVE_AT = 0.0
+
+
+def _ui_tick():
+    global UI_ALIVE_AT
+    UI_ALIVE_AT = time.time()
+    exclude_process_windows()
+
+
+def seconds_since_ui_tick():
+    """How long the Qt event loop has gone without servicing its timer."""
+    return None if not UI_ALIVE_AT else time.time() - UI_ALIVE_AT
 
 
 def _log_display_environment(app):
@@ -1188,8 +1205,11 @@ class GhostOverlay:
 
         # Backstop: anything the event filter and its sweeps still miss gets
         # picked up within half a second. Cheap — EnumWindows over one process.
+        # It doubles as the UI thread's pulse: it can only run if the Qt event
+        # loop is still servicing timers, so a stale stamp means the interface
+        # has stopped responding even though the process is still alive.
         self._sweep_timer = QTimer()
-        self._sweep_timer.timeout.connect(exclude_process_windows)
+        self._sweep_timer.timeout.connect(_ui_tick)
         self._sweep_timer.start(500)
 
         total_w = max(self.BAR_W, self.PANEL_W) + 24

@@ -535,7 +535,7 @@ class AudioCapture:
         # Primary backend on Windows: soundcard WASAPI Loopback
         if sys.platform == 'win32' and SOUNDCARD_AVAILABLE and not wants_sounddevice:
             try:
-                self._thread = threading.Thread(target=self._soundcard_thread, daemon=True)
+                self._thread = threading.Thread(target=self._soundcard_thread, name="capture-wasapi", daemon=True)
                 self._thread.start()
                 logger.info("Audio capture started (soundcard WASAPI loopback)")
                 return
@@ -563,7 +563,7 @@ class AudioCapture:
 
         # Linux fallback: arecord
         if sys.platform.startswith('linux'):
-            self._thread = threading.Thread(target=self._arecord_thread, daemon=True)
+            self._thread = threading.Thread(target=self._arecord_thread, name="capture-arecord", daemon=True)
             self._thread.start()
             logger.info("Audio capture started (arecord fallback)")
         else:
