@@ -36,6 +36,49 @@ WDA_NONE = 0x00000000
 GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x00000020
 
+# ── Win32 prototypes ─────────────────────────────────────────────────────
+# Every one of these used to be called unprototyped, which means ctypes had
+# to guess: a Python int handle went across as a 32-bit C int rather than a
+# 64-bit HWND, and the EnumWindows callback was declared to return c_bool —
+# one byte — where Win32 reads a four-byte BOOL. Guessing wrong about a
+# calling convention does not fail cleanly; it corrupts whatever the callee
+# reads next, and it does so differently on different machines.
+#
+# A crash dump from the machine that fails puts its UI thread inside that
+# callback, at the GetWindowThreadProcessId call, which is the first thing it
+# does with the handle it was passed.
+_U32 = None
+_ENUM_WINDOWS_PROC = None
+if IS_WINDOWS:
+    try:
+        from ctypes import wintypes
+
+        _U32 = ctypes.WinDLL("user32", use_last_error=True)
+        _ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        _U32.EnumWindows.argtypes = [_ENUM_WINDOWS_PROC, wintypes.LPARAM]
+        _U32.EnumWindows.restype = wintypes.BOOL
+        _U32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        _U32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        _U32.IsWindow.argtypes = [wintypes.HWND]
+        _U32.IsWindow.restype = wintypes.BOOL
+        _U32.IsWindowVisible.argtypes = [wintypes.HWND]
+        _U32.IsWindowVisible.restype = wintypes.BOOL
+        _U32.GetWindowDisplayAffinity.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        _U32.GetWindowDisplayAffinity.restype = wintypes.BOOL
+        _U32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+        _U32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+        _U32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        _U32.GetWindowLongW.restype = wintypes.LONG
+        _U32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+        _U32.SetWindowLongW.restype = wintypes.LONG
+    except Exception as _w32_err:                  # never fail to import
+        _U32 = None
+        logger.error(f"Could not prototype the Win32 calls: {_w32_err}")
+
 # ════════════════════════════════════════════════════════════════
 #  Theme — one palette, referenced everywhere
 # ════════════════════════════════════════════════════════════════
@@ -166,7 +209,7 @@ def exclude_from_capture(widget) -> bool:
         logger.debug(f"Excluding from capture: {type(widget).__name__} "
                      f"'{widget.windowTitle() or widget.objectName()}'")
         hwnd = int(widget.winId())
-        ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+        _U32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
         return is_excluded(hwnd)
     except Exception as e:
         logger.error(f"Capture exclusion failed for {widget}: {e}")
@@ -178,9 +221,8 @@ def is_excluded(hwnd) -> bool:
     if not IS_WINDOWS:
         return False
     try:
-        affinity = ctypes.c_ulong()
-        if not ctypes.windll.user32.GetWindowDisplayAffinity(
-                int(hwnd), ctypes.byref(affinity)):
+        affinity = wintypes.DWORD()
+        if not _U32.GetWindowDisplayAffinity(int(hwnd), ctypes.byref(affinity)):
             return False
         return affinity.value == WDA_EXCLUDEFROMCAPTURE
     except Exception as e:
@@ -202,27 +244,43 @@ def exclude_process_windows() -> int:
     if not IS_WINDOWS or not config.CAPTURE_HIDING:
         return 0
 
-    u32 = ctypes.windll.user32
+    if _U32 is None:
+        return 0
+
     pid_here = ctypes.windll.kernel32.GetCurrentProcessId()
     fixed = 0
 
     def visit(hwnd, _):
+        # Everything in here runs inside a native EnumWindows frame. An
+        # exception escaping a ctypes callback into native code is undefined
+        # behaviour, so nothing is allowed out — enumeration continues either
+        # way, and one unreadable window is not worth the process.
         nonlocal fixed
-        pid = ctypes.c_ulong()
-        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value != pid_here or not u32.IsWindowVisible(hwnd):
-            return True
-        affinity = ctypes.c_ulong()
-        if (u32.GetWindowDisplayAffinity(hwnd, ctypes.byref(affinity))
-                and affinity.value != WDA_EXCLUDEFROMCAPTURE):
-            if u32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE):
-                fixed += 1
+        try:
+            # The window may have been destroyed since EnumWindows listed it.
+            # Transient popups — a dropdown closing under the user's finger —
+            # make that ordinary rather than rare.
+            if not _U32.IsWindow(hwnd):
+                return True
+            pid = wintypes.DWORD()
+            _U32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value != pid_here or not _U32.IsWindowVisible(hwnd):
+                return True
+            affinity = wintypes.DWORD()
+            if (_U32.GetWindowDisplayAffinity(hwnd, ctypes.byref(affinity))
+                    and affinity.value != WDA_EXCLUDEFROMCAPTURE):
+                if _U32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE):
+                    fixed += 1
+        except Exception as e:
+            logger.debug(f"Sweep skipped a window: {e}")
         return True
 
     try:
-        callback = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
-                                      ctypes.c_void_p)(visit)
-        u32.EnumWindows(callback, 0)
+        # Held in a local for the duration of the call: if this is collected
+        # while EnumWindows is still calling it, the callback address is
+        # dangling.
+        callback = _ENUM_WINDOWS_PROC(visit)
+        _U32.EnumWindows(callback, 0)
     except Exception as e:
         logger.error(f"Window sweep failed: {e}")
     return fixed
@@ -1184,7 +1242,7 @@ class GhostOverlay:
             return
         try:
             flag = WDA_EXCLUDEFROMCAPTURE if exclude else WDA_NONE
-            ctypes.windll.user32.SetWindowDisplayAffinity(self._hwnd, flag)
+            _U32.SetWindowDisplayAffinity(self._hwnd, flag)
             # Read it back: the call can fail quietly on Windows 10 before
             # build 19041, and "we asked for it" is not the same as "it is on".
             self.capture_hidden = is_excluded(self._hwnd) if exclude else False
@@ -1200,12 +1258,12 @@ class GhostOverlay:
         if not IS_WINDOWS or not self._hwnd:
             return
         try:
-            style = ctypes.windll.user32.GetWindowLongW(self._hwnd, GWL_EXSTYLE)
+            style = _U32.GetWindowLongW(self._hwnd, GWL_EXSTYLE)
             if enabled:
                 style |= WS_EX_TRANSPARENT
             else:
                 style &= ~WS_EX_TRANSPARENT
-            ctypes.windll.user32.SetWindowLongW(self._hwnd, GWL_EXSTYLE, style)
+            _U32.SetWindowLongW(self._hwnd, GWL_EXSTYLE, style)
         except Exception as e:
             logger.error(f"Click-through error: {e}")
 
