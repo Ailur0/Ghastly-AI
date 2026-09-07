@@ -208,6 +208,37 @@ def exclude_process_windows() -> int:
 
 
 if HAS_PYQT:
+    class _PopupProbe(QObject):
+        """
+        Reports the mouse events a dropdown list actually receives.
+
+        Written because a click test using QTest passed on every machine here
+        while two other machines could not use the list at all — QTest
+        delivers straight to the widget and bypasses the mouse grab, so it
+        proved the wiring and not the thing that was broken. Only a real
+        press arriving here proves the click got that far.
+        """
+
+        def __init__(self, combo):
+            super().__init__(combo)
+            self.combo = combo
+
+        def eventFilter(self, obj, event):
+            kind = {QEvent.MouseButtonPress: "press",
+                    QEvent.MouseButtonRelease: "release"}.get(event.type())
+            if kind:
+                try:
+                    pos = event.pos()
+                    idx = self.combo.view().indexAt(pos)
+                    where = (f"row {idx.row()} = {idx.data()!r}" if idx.isValid()
+                             else "no row under the cursor")
+                    logger.info(f"Dropdown {kind}: {self.combo.objectName() or 'combo'} "
+                                f"at ({pos.x()},{pos.y()}) -> {where}")
+                except Exception as e:
+                    logger.debug(f"Could not describe a dropdown {kind}: {e}")
+            return False           # never consume; only observe
+
+
     class TopMostComboBox(QComboBox):
         """
         A dropdown that opens in front of the panel holding it.
@@ -222,7 +253,29 @@ if HAS_PYQT:
 
         The flag goes on before the popup is shown. Setting it afterwards
         re-creates the native window, which drops the grab.
+
+        The topmost flag did NOT fix the report it was written for — a second
+        machine still opens the list and cannot choose from it, with onTop
+        confirmed true in its log. So the list also reports the mouse events
+        it receives. Three outcomes, three different bugs:
+
+          opened, then nothing            the click never reached the widget
+          opened, presses, no activation  it received clicks and mis-hit them
+          opened, activated               the click worked; look elsewhere
+
+        Activation is logged rather than only the change, because re-choosing
+        the item already selected emits no change and would otherwise read as
+        a click that failed.
         """
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._probe = _PopupProbe(self)
+            self.view().viewport().installEventFilter(self._probe)
+            self.activated.connect(
+                lambda i: logger.info(
+                    f"Dropdown activated: {self.objectName() or 'combo'} "
+                    f"row {i} = {self.itemText(i)!r}"))
 
         def showPopup(self):
             popup = self.view().window()
