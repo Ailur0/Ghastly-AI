@@ -190,6 +190,18 @@ AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "Auto")
 # nothing in Python can catch — so there has to be a way off it that does not
 # need a new build.
 AUDIO_BACKEND = os.environ.get("AUDIO_BACKEND", "auto").lower()
+
+# === Diagnostics ===
+# Hiding every window from screen capture means calling SetWindowDisplayAffinity
+# on each new HWND and sweeping the process's windows twice a second. On one
+# machine the app dies within seconds of the setup panel or a dropdown opening
+# — the two moments it creates new top-level windows — with a native access
+# violation on a thread that has no Python frames at all.
+#
+# Setting CAPTURE_HIDING=0 turns all of that off, which answers whether it is
+# the cause. It also makes the overlay plainly visible in a screen share, so
+# it is a diagnostic and not a setting to leave on.
+CAPTURE_HIDING = os.environ.get("CAPTURE_HIDING", "1").lower() not in ("0", "false", "no")
 # Anything shorter than this is a grunt, not a question. Each utterance costs
 # one Groq transcription request, so the floor is money as well as latency.
 MIN_UTTERANCE_SEC = float(os.environ.get("MIN_UTTERANCE_SEC", "1.2"))

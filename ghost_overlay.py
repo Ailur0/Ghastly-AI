@@ -158,9 +158,13 @@ def exclude_from_capture(widget) -> bool:
     visible in a screen share, which is worth knowing before an interview
     rather than during one.
     """
-    if not IS_WINDOWS:
+    if not IS_WINDOWS or not config.CAPTURE_HIDING:
         return False
     try:
+        # Logged before the call, not after: if this is what kills the
+        # process, the last line in the log names the window it was touching.
+        logger.debug(f"Excluding from capture: {type(widget).__name__} "
+                     f"'{widget.windowTitle() or widget.objectName()}'")
         hwnd = int(widget.winId())
         ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
         return is_excluded(hwnd)
@@ -195,7 +199,7 @@ def exclude_process_windows() -> int:
 
     Returns how many windows this call had to fix.
     """
-    if not IS_WINDOWS:
+    if not IS_WINDOWS or not config.CAPTURE_HIDING:
         return 0
 
     u32 = ctypes.windll.user32
@@ -1165,6 +1169,12 @@ class GhostOverlay:
         if not IS_WINDOWS or not self._hwnd:
             self.capture_hidden = False
             return
+        if not config.CAPTURE_HIDING:
+            # The diagnostic switch has to reach this path too, or the main
+            # window stays excluded and the experiment answers nothing.
+            self.capture_hidden = False
+            logger.info("WDA skipped (CAPTURE_HIDING=0)")
+            return
         try:
             flag = WDA_EXCLUDEFROMCAPTURE if exclude else WDA_NONE
             ctypes.windll.user32.SetWindowDisplayAffinity(self._hwnd, flag)
@@ -1211,6 +1221,11 @@ class GhostOverlay:
         self._sweep_timer = QTimer()
         self._sweep_timer.timeout.connect(_ui_tick)
         self._sweep_timer.start(500)
+        if not config.CAPTURE_HIDING:
+            logger.critical(
+                "CAPTURE_HIDING=0 — this overlay IS VISIBLE in a screen share. "
+                "Diagnostic mode only: it exists to find out whether hiding "
+                "windows from capture is what crashes this machine.")
 
         total_w = max(self.BAR_W, self.PANEL_W) + 24
         total_h = self.BAR_H + self.PANEL_H + 32

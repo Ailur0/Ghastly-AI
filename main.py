@@ -211,6 +211,7 @@ def log_environment():
                 f"vision={config.GROQ_LLM_VISION_MODEL} stt={config.GROQ_WHISPER_MODEL}")
     logger.info(f"  answers      : temp={config.LLM_TEMPERATURE} "
                 f"context_cap={config.MAX_CONTEXT_CHARS} history={config.KEEP_HISTORY}")
+    logger.info(f"  capture hide : {'on' if config.CAPTURE_HIDING else 'OFF — the overlay is VISIBLE in a screen share'}")
     logger.info(f"  vad          : threshold={config.SILENCE_THRESHOLD} "
                 f"silence={config.SILENCE_DURATION}s "
                 f"utterance={config.MIN_UTTERANCE_SEC}-{config.MAX_UTTERANCE_SEC}s "
