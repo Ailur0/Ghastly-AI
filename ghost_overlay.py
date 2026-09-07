@@ -299,9 +299,16 @@ if HAS_PYQT:
                     f"row {i} = {self.itemText(i)!r}"))
 
         def showPopup(self):
-            popup = self.view().window()
-            popup.setWindowFlags(popup.windowFlags() | Qt.WindowStaysOnTopHint)
             super().showPopup()
+            popup = self.view().window()
+            # The topmost flag that used to be forced on here is gone. It never
+            # did anything — screenshots with and without it were identical,
+            # because a Qt.Popup already draws above its parent — and
+            # setWindowFlags destroys and recreates a widget's native window.
+            # Doing that to a popup Qt owns and reuses leaves it holding a
+            # handle it did not make, and Qt touches that popup again when it
+            # closes. Which is exactly where the failing machine dies: press
+            # and release both land on the right row, then nothing.
             # Its own HWND, so it needs its own exclusion — a dropdown listing
             # answer styles is not something to leak into a screen share.
             hidden = exclude_from_capture(popup)
