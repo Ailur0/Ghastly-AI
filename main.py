@@ -241,6 +241,7 @@ def log_environment():
                 f"context_cap={config.MAX_CONTEXT_CHARS} history={config.KEEP_HISTORY}")
     logger.info(f"  capture hide : {'on' if config.CAPTURE_HIDING else 'OFF — the overlay is VISIBLE in a screen share'}"
                 + (f" (auto-disabled after {_UNCLEAN_EXITS} crashes)" if _AUTO_UNHIDE else "")
+                + f" | sweep={'on' if config.CAPTURE_SWEEP else 'off'}"
                 + f" | unclean exits before this run: {_UNCLEAN_EXITS}")
     logger.info(f"  vad          : threshold={config.SILENCE_THRESHOLD} "
                 f"silence={config.SILENCE_DURATION}s "

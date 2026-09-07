@@ -202,6 +202,21 @@ AUDIO_BACKEND = os.environ.get("AUDIO_BACKEND", "auto").lower()
 # the cause. It also makes the overlay plainly visible in a screen share, so
 # it is a diagnostic and not a setting to leave on.
 CAPTURE_HIDING = os.environ.get("CAPTURE_HIDING", "1").lower() not in ("0", "false", "no")
+
+# The periodic sweep is a separate thing from hiding, and it is off now.
+#
+# It enumerated every window in the system twice a second, on the UI thread,
+# to catch the drop-shadow window Windows draws behind tooltips and menus.
+# Cosmetic — a shadow-shaped smudge in a screen share. Against that: on one
+# machine the UI thread sits inside that sweep in two of nine crash dumps,
+# which is far more often than the fraction of time it actually occupies, and
+# it kept crashing there after its Win32 calls were correctly prototyped, an
+# IsWindow guard was added, and the callback was wrapped.
+#
+# Every window this app owns is still hidden individually as it appears. Only
+# the shadow behind a tooltip is not. That is a good trade for a machine that
+# was dying within seconds of opening the settings.
+CAPTURE_SWEEP = os.environ.get("CAPTURE_SWEEP", "0").lower() in ("1", "true", "yes")
 # Anything shorter than this is a grunt, not a question. Each utterance costs
 # one Groq transcription request, so the floor is money as well as latency.
 MIN_UTTERANCE_SEC = float(os.environ.get("MIN_UTTERANCE_SEC", "1.2"))

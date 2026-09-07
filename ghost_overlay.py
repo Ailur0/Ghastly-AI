@@ -140,9 +140,17 @@ UI_ALIVE_AT = 0.0
 
 
 def _ui_tick():
+    """
+    The UI thread's pulse, and — when enabled — the window sweep.
+
+    The pulse is the reason this timer still runs at all: the heartbeat reads
+    it to tell a busy app from a frozen one. The sweep it used to carry is off
+    by default now; see CAPTURE_SWEEP.
+    """
     global UI_ALIVE_AT
     UI_ALIVE_AT = time.time()
-    exclude_process_windows()
+    if config.CAPTURE_SWEEP:
+        exclude_process_windows()
 
 
 def seconds_since_ui_tick():
@@ -270,7 +278,7 @@ def exclude_process_windows() -> int:
 
     Returns how many windows this call had to fix.
     """
-    if not IS_WINDOWS or not config.CAPTURE_HIDING:
+    if not IS_WINDOWS or not config.CAPTURE_HIDING or not config.CAPTURE_SWEEP:
         return 0
 
     if _U32 is None:
@@ -453,8 +461,9 @@ if HAS_PYQT:
                 # Deferred, not immediate: this fires inside Qt's own show
                 # sequence for the window in question.
                 exclude_soon(obj)
-                for delay in self.SWEEP_DELAYS_MS:
-                    QTimer.singleShot(delay, exclude_process_windows)
+                if config.CAPTURE_SWEEP:
+                    for delay in self.SWEEP_DELAYS_MS:
+                        QTimer.singleShot(delay, exclude_process_windows)
             return False
 
 
