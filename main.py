@@ -143,6 +143,8 @@ def _log_exit():
     that simply ends; this distinguishes them.
     """
     logger.info("Process exiting normally")
+    # Clears the crash counter. Only a clean exit reaches this.
+    _file_context.clear_session_flag()
     if _crash_log is not None:
         try:
             _crash_log.write(f"===== clean exit {time.strftime('%H:%M:%S')} =====\n")
@@ -154,6 +156,32 @@ def _log_exit():
 # Did a previous run die with the file picker open? Read once, at import,
 # before anything can write the marker again.
 import file_context as _file_context
+
+# How many runs in a row ended without cleaning up after themselves. A native
+# crash gets no chance to write anything on the way out, so this counter is
+# the only evidence the last run died rather than quit.
+_UNCLEAN_EXITS = _file_context.mark_session_open()
+
+# Hiding windows from screen capture means calling into the window manager
+# every time this app shows anything. On one machine that is fatal — the
+# process dies within seconds of the setup panel opening, with the UI thread
+# somewhere inside Qt's own window code and an access violation to show for
+# it. Two rounds of fixes moved the crash without ending it.
+#
+# So after two consecutive crashes the app stops hiding itself, which is both
+# the experiment and the workaround: if it then survives, that was the cause,
+# and meanwhile the person has a working app instead of a fifth crash log.
+# Turning it off is loud, in the log and in the panel, because it is the
+# whole point of this overlay and nobody should lose it without being told.
+CRASHES_BEFORE_UNHIDING = 2
+_AUTO_UNHIDE = _UNCLEAN_EXITS >= CRASHES_BEFORE_UNHIDING
+if _AUTO_UNHIDE and config.CAPTURE_HIDING:
+    config.CAPTURE_HIDING = False
+    logger.critical(
+        f"The last {_UNCLEAN_EXITS} runs ended in a crash. Starting WITHOUT "
+        f"capture hiding — this overlay IS NOW VISIBLE in a screen share. "
+        f"If this run is stable, hiding windows from capture is what was "
+        f"killing it. Set CAPTURE_HIDING=1 in .env to force it back on.")
 _picker_crashed = bool(_file_context.picker_crashed_last_time())
 if _picker_crashed:
     logger.warning("The file picker crashed the app last time — using the "
@@ -211,7 +239,9 @@ def log_environment():
                 f"vision={config.GROQ_LLM_VISION_MODEL} stt={config.GROQ_WHISPER_MODEL}")
     logger.info(f"  answers      : temp={config.LLM_TEMPERATURE} "
                 f"context_cap={config.MAX_CONTEXT_CHARS} history={config.KEEP_HISTORY}")
-    logger.info(f"  capture hide : {'on' if config.CAPTURE_HIDING else 'OFF — the overlay is VISIBLE in a screen share'}")
+    logger.info(f"  capture hide : {'on' if config.CAPTURE_HIDING else 'OFF — the overlay is VISIBLE in a screen share'}"
+                + (f" (auto-disabled after {_UNCLEAN_EXITS} crashes)" if _AUTO_UNHIDE else "")
+                + f" | unclean exits before this run: {_UNCLEAN_EXITS}")
     logger.info(f"  vad          : threshold={config.SILENCE_THRESHOLD} "
                 f"silence={config.SILENCE_DURATION}s "
                 f"utterance={config.MIN_UTTERANCE_SEC}-{config.MAX_UTTERANCE_SEC}s "
@@ -1048,6 +1078,13 @@ class GhostInterviewAgent:
         heartbeat = threading.Thread(target=self._heartbeat,
                                      name="heartbeat", daemon=True)
         heartbeat.start()
+
+        if _AUTO_UNHIDE:
+            self.overlay.set_status("error")
+            self.overlay.notice(
+                "This overlay is VISIBLE in screen shares right now. It "
+                "crashed twice with capture hiding on, so it started without "
+                "it. Do not rely on it being hidden until that is sorted.")
 
         if getattr(self.audio, "capturing_microphone", False):
             self.overlay.set_status("error")

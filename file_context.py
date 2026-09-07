@@ -112,6 +112,47 @@ def mark_picker_open(mode: str) -> None:
         logger.debug(f"Could not write the picker marker: {e}")
 
 
+def session_flag_path() -> Path:
+    """Marker held for the life of a run, counting unclean exits."""
+    return writable_base() / "context" / ".session-open"
+
+
+def mark_session_open() -> int:
+    """
+    Record that a run has started, and return how many previous runs ended
+    without cleaning up after themselves.
+
+    A native crash leaves no exception to catch and no chance to write
+    anything on the way out, so the only way to know it happened is to notice
+    that the last run never took its marker down. The same trick the file
+    picker has used since it started crashing machines.
+    """
+    try:
+        p = session_flag_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        previous = 0
+        if p.exists():
+            try:
+                previous = int(p.read_text(encoding="utf-8").strip() or "0")
+            except ValueError:
+                previous = 1
+        p.write_text(str(previous + 1), encoding="utf-8")
+        return previous
+    except Exception as e:
+        logger.debug(f"Could not write the session marker: {e}")
+        return 0
+
+
+def clear_session_flag() -> None:
+    """Called on a clean exit. Its absence next launch means a crash."""
+    try:
+        session_flag_path().unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.debug(f"Could not clear the session marker: {e}")
+
+
 def clear_picker_flag() -> None:
     try:
         picker_flag_path().unlink()
