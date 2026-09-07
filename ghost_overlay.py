@@ -230,6 +230,35 @@ def is_excluded(hwnd) -> bool:
         return False
 
 
+def exclude_soon(widget):
+    """
+    Hide a window from capture on the next turn of the event loop, not now.
+
+    Called from a Show event, "now" means part-way through Qt's own code for
+    showing that window — QComboBox.showPopup, QDialog.show — and reaching
+    into the native handle there means touching an HWND Qt has not finished
+    setting up. A crash dump from the machine that fails puts its UI thread
+    inside Qt's showPopup, and the crashes cluster on exactly the two moments
+    this app shows a new window.
+
+    The file picker has deferred its exclusion this way from the start and has
+    never appeared in a dump. Everything else now does the same.
+
+    One turn of the event loop is a real gap: the window is on screen and
+    capturable for a frame or two. That is the price of not reaching into Qt's
+    hands while they are full.
+    """
+    def run():
+        try:
+            if widget is not None and widget.isVisible():
+                exclude_from_capture(widget)
+        except RuntimeError:
+            # The window closed before we got to it — a dropdown dismissed
+            # quickly does this — and there is nothing left to hide.
+            logger.debug("Window went away before it could be hidden")
+    QTimer.singleShot(0, run)
+
+
 def exclude_process_windows() -> int:
     """
     Exclude every top-level window this process owns, Qt's or not.
@@ -368,9 +397,9 @@ if HAS_PYQT:
             # closes. Which is exactly where the failing machine dies: press
             # and release both land on the right row, then nothing.
             # Its own HWND, so it needs its own exclusion — a dropdown listing
-            # answer styles is not something to leak into a screen share.
-            hidden = exclude_from_capture(popup)
-            popup.raise_()
+            # answer styles is not something to leak into a screen share — but
+            # scheduled rather than done here, for the reason in exclude_soon.
+            exclude_soon(popup)
             # Logged on both sides: an "opened" with no "chose" after it is
             # the signature of a list the user could see but not use, which is
             # otherwise indistinguishable from never having clicked at all.
@@ -379,7 +408,7 @@ if HAS_PYQT:
                         f"({self.count()} items, showing '{self.currentText()}') "
                         f"at ({g.x()},{g.y()}) {g.width()}x{g.height()} "
                         f"| onTop={bool(popup.windowFlags() & Qt.WindowStaysOnTopHint)} "
-                        f"| hidden_from_capture={hidden}")
+                        f"| hiding deferred to the next event loop turn")
 
         def hidePopup(self):
             super().hidePopup()
@@ -421,7 +450,9 @@ if HAS_PYQT:
 
         def eventFilter(self, obj, event):
             if event.type() == QEvent.Show and isinstance(obj, QWidget) and obj.isWindow():
-                exclude_from_capture(obj)
+                # Deferred, not immediate: this fires inside Qt's own show
+                # sequence for the window in question.
+                exclude_soon(obj)
                 for delay in self.SWEEP_DELAYS_MS:
                     QTimer.singleShot(delay, exclude_process_windows)
             return False
