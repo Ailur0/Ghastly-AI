@@ -50,7 +50,7 @@ class AudioCapture:
     def __init__(self, sample_rate=16000, chunk_duration=3,
                  silence_threshold=0.01, silence_duration=1.5,
                  min_utterance_sec=1.2, ring_seconds=30,
-                 max_utterance_sec=30):
+                 max_utterance_sec=30, prefer_backend="auto"):
         self.sample_rate = sample_rate
         # Utterances shorter than this never reach the transcription API:
         # "mm-hm" and "right" are not questions, and each one would cost a
@@ -59,6 +59,8 @@ class AudioCapture:
         # And a ceiling, because nothing else ends an utterance that never
         # goes quiet.
         self.max_utterance_sec = max_utterance_sec
+        # "auto" | "soundcard" | "sounddevice" — see start().
+        self.prefer_backend = (prefer_backend or "auto").lower()
         self.chunk_duration = chunk_duration
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
@@ -96,6 +98,11 @@ class AudioCapture:
 
         # Why the capture thread stopped, if it did. See capture_alive().
         self._capture_error = None
+
+        # Set by the capture thread when Windows switches the default speaker,
+        # read and cleared by the watchdog. A bool passed between threads,
+        # rather than the watchdog reaching into soundcard itself.
+        self._device_changed = False
 
         # The few frames before the gate opened. Speech starts quieter than it
         # continues, so the frame that finally crosses the threshold is never
@@ -437,8 +444,17 @@ class AudioCapture:
             logger.info(f"Using soundcard loopback device: {mic.name}")
             
             with mic.recorder(samplerate=self.sample_rate, channels=1) as recorder:
+                since_device_check = 0
                 while self.is_running:
                     data = recorder.record(numframes=self._frames_per_chunk)
+
+                    # Roughly every 15s, on this thread rather than the
+                    # watchdog's. Cheap next to the recording itself.
+                    since_device_check += 1
+                    if since_device_check >= 150:
+                        since_device_check = 0
+                        self._check_default_device()
+
                     if data.size == 0:
                         time.sleep(0.01)
                         continue
@@ -528,9 +544,18 @@ class AudioCapture:
         self.last_frame_time = None
         self._capture_error = None
 
+        # An escape hatch for a machine where soundcard's WASAPI path is
+        # unstable. It crashed one machine outright — a native access
+        # violation inside its recorder, which no amount of Python error
+        # handling can survive — and PortAudio is a completely separate code
+        # path to that hardware. Set AUDIO_BACKEND=sounddevice in .env.
+        if self.prefer_backend == "sounddevice":
+            logger.info("AUDIO_BACKEND=sounddevice — skipping the soundcard path")
+
         # A device picked explicitly decides the backend; "sd:" means the
         # user chose a PortAudio input, so skip the WASAPI path entirely.
-        wants_sounddevice = str(self.device_id).startswith("sd:")
+        wants_sounddevice = (str(self.device_id).startswith("sd:")
+                             or self.prefer_backend == "sounddevice")
 
         # Primary backend on Windows: soundcard WASAPI Loopback
         if sys.platform == 'win32' and SOUNDCARD_AVAILABLE and not wants_sounddevice:
@@ -585,19 +610,40 @@ class AudioCapture:
             self._thread.join(timeout=2)
         logger.info("Audio capture stopped")
     
-    def default_device_changed(self) -> bool:
+    def take_device_changed(self) -> bool:
         """
-        True when we are following the default speaker and Windows has since
-        made a different one default — headphones plugged in, a headset
-        connecting, a call app grabbing a device.
+        Whether Windows has made a different speaker the default since capture
+        opened. Clears the flag, so each change is reported once.
+
+        The check itself happens on the capture thread — see _check_default_
+        device. It used to run here, on the watchdog thread, and that is the
+        best explanation we have for a crash that killed the app outright on
+        another machine: soundcard is COM-based, COM apartments belong to a
+        thread, and its wrapper calls CoUninitialize when garbage collected.
+        Creating soundcard objects on the watchdog thread meant a collection
+        could tear down the apartment the capture thread was mid-recording
+        in, and the next call through the interface pointer — GetDevicePeriod —
+        landed on freed memory. Three crash dumps from that machine name
+        exactly that frame.
+        """
+        changed, self._device_changed = self._device_changed, False
+        return changed
+
+    def _check_default_device(self):
+        """
+        Compare the current default speaker against the one we opened.
+
+        Runs on the capture thread and nowhere else, so every soundcard
+        object this app creates while recording belongs to the same COM
+        apartment as the recorder using it.
         """
         if self._opened_speaker_id is None or not SOUNDCARD_AVAILABLE:
-            return False
+            return
         try:
-            return str(sc.default_speaker().id) != self._opened_speaker_id
+            if str(sc.default_speaker().id) != self._opened_speaker_id:
+                self._device_changed = True
         except Exception as e:
             logger.debug(f"Could not read the default speaker: {e}")
-            return False
 
     def newest_pending(self, chunk):
         """

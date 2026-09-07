@@ -184,6 +184,12 @@ HEARTBEAT_SEC = float(os.environ.get("HEARTBEAT_SEC", "30"))
 # "Auto" lets the capture layer pick; otherwise a device id from
 # AudioCapture.list_input_devices().
 AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "Auto")
+# Which capture library to use: "auto" prefers soundcard's WASAPI loopback on
+# Windows, "sounddevice" forces PortAudio instead. soundcard crashed one
+# machine outright from inside its own recorder — a native access violation
+# nothing in Python can catch — so there has to be a way off it that does not
+# need a new build.
+AUDIO_BACKEND = os.environ.get("AUDIO_BACKEND", "auto").lower()
 # Anything shorter than this is a grunt, not a question. Each utterance costs
 # one Groq transcription request, so the floor is money as well as latency.
 MIN_UTTERANCE_SEC = float(os.environ.get("MIN_UTTERANCE_SEC", "1.2"))

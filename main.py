@@ -218,7 +218,7 @@ def log_environment():
 
     from audio_capture import SOUNDCARD_AVAILABLE, SD_AVAILABLE
     logger.info(f"  audio libs   : soundcard={SOUNDCARD_AVAILABLE} "
-                f"sounddevice={SD_AVAILABLE}")
+                f"sounddevice={SD_AVAILABLE} | backend={config.AUDIO_BACKEND}")
     logger.info("--- end environment ---")
 
 
@@ -251,7 +251,8 @@ class GhostInterviewAgent:
             silence_duration=config.SILENCE_DURATION,
             min_utterance_sec=config.MIN_UTTERANCE_SEC,
             max_utterance_sec=config.MAX_UTTERANCE_SEC,
-            ring_seconds=config.AUDIO_RING_SEC
+            ring_seconds=config.AUDIO_RING_SEC,
+            prefer_backend=config.AUDIO_BACKEND
         )
         
         self.context_mgr = ContextManager(
@@ -655,7 +656,7 @@ class GhostInterviewAgent:
                                     f"Pick a different source in setup.")
                     continue
 
-                if self.audio.default_device_changed():
+                if self.audio.take_device_changed():
                     logger.warning("Default audio device changed — reopening capture")
                     self.notify("Audio device changed — reconnected to the new one.")
                     self.restart_audio(self.context_mgr.get_audio_device())
